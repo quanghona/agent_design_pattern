@@ -1,30 +1,55 @@
 import abc
 from collections.abc import Callable
-from typing import Optional
+import json
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
 class AgentMessage(BaseModel):
-    query: str = Field(description="The prompt consumed by agent's LLM. Note that this is a user prompt")
-    origin: str = Field(description="The agent that send this message", default="")
-    response: Optional[str] = Field(description="The response from the agent's LLM", default="")
-    artifact: Optional[dict] = Field(description="""
+    query: str = Field(...,description="The prompt consumed by agent's LLM. Note that this is a user prompt")
+    origin: Optional[str] = Field(None, description="The agent that send this message")
+    response: Optional[str] = Field(None, description="The response from the agent's LLM")
+    artifact: Optional[dict] = Field(None, description="""
         Agent additional material, which probably is the output of other agent or user entered.
         There are various types of artifact produced by user and other agents.
         The prompt that comsume this artifact need to explicitly know the format of this artifact.""")
-    execution_result: Optional[str] = Field(description="The execution result of the agent. Can be success or error", default="success")
-    error_message: Optional[str] = Field(description="The error message if the execution result is error.", default="")
+    execution_result: Optional[str] = Field(None, description="The execution result of the agent. Can be success or error")
+    error_message: Optional[str] = Field(None, description="The error message if the execution result is error.")
+    # media: Optional[List[str]] = Field(None, description="The additional media content. Can be image, video, audio, etc.")
+    # media_type: Optional[List[str]] = Field(None, description="The media type associated with the media.")
 
-    def to_dict(self):
-        return {
-            "query": self.query,
-            "origin": self.origin,
-            "response": self.response,
-            "execution_result": self.execution_result,
-            "error_message": self.error_message,
-            "artifact": self.artifact.__dict__
-        }
+    def flatten_dict(self, d: dict, parent_key: str = '', sep='_'):
+        """
+        Flattens a nested dictionary into a single-level dictionary.
 
+        Args:
+            d (dict): The dictionary to flatten.
+            parent_key (str): The prefix for keys in the flattened dictionary.
+            sep (str): The separator used to join parent and child keys.
+
+        Returns:
+            dict: The flattened dictionary.
+        """
+        items = []
+        for k, v in d.items():
+            new_key = parent_key + sep + k if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self.flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append((new_key, v))
+        return dict(items)
+
+    def to_dict(self) -> dict[str, Any]:
+        msg_json =  self.model_dump(exclude_none=True, exclude={"artifact"})
+        if self.artifact:
+            artifact_dict = self.flatten_dict(self.artifact, parent_key="artifact")
+            for k, v in artifact_dict.items():
+                msg_json[k] = v
+        return msg_json
+
+    def dump_json(self) -> str:
+        msg_dict = self.to_dict()
+        return json.dumps(msg_dict)
 
 class LLMChain(abc.ABC):
     def __init__(self):
@@ -33,6 +58,10 @@ class LLMChain(abc.ABC):
     @abc.abstractmethod
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
         pass
+
+    async def ainvoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        return self.invoke(message, **kwargs)
+
 
 class IAgent(abc.ABC):
     _object_count = 0
@@ -44,6 +73,9 @@ class IAgent(abc.ABC):
         self.tools = []     # internal tools, RAG or MCP
         self.state_change_callback = state_change_callback
         self.name = name if name else f"{type(self).__name__}_{IAgent._object_count}"
+        # TODO: maybe follow A2A's agent card and agent skill
+        # self.card = None
+        # self.skills = None
 
     @abc.abstractmethod
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
