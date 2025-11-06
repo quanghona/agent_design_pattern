@@ -42,3 +42,40 @@ class ReflectionAgent(IAgent):
         self._set_state("idle")
         result_message.origin = self.name
         return result_message
+
+
+class SequentialAgent(IAgent):
+    """
+    A sequential agent is an agent that will execute a list of agents in a particular order.
+
+    The order of the agents is the order of the execution. This means that the first agent will be executed first, then the second agent and so on.
+
+    Example:
+        agent1 = Agent1()
+        agent2 = Agent2()
+
+        sequential_agent = SequentialAgent([agent1, agent2])
+
+        message = AgentMessage(query="hello")
+        result = sequential_agent.execute(message)
+
+    Attributes:
+        agents: The list of agents to execute in sequence.
+    """
+    def __init__(self, agents: list[IAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
+        super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+        self.agents = agents
+
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        for agent in self.agents:
+            self._set_state("running agent " + agent.name)
+            message = agent.execute(message, **kwargs)
+
+            if message.execution_result != "success":
+                break
+
+        self._set_state("idle")
+        message.origin = self.name
+
+        return message
+
