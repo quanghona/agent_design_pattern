@@ -1,0 +1,10 @@
+[project]
+name = "agent-design-pattern"
+version = "0.1.0"
+description = "Agent design pattern / agent orchestration"
+readme = "README.md"
+requires-python = ">=3.10.12"
+dependencies = [
+    "load-dotenv>=0.1.0",
+    "torch"
+]
