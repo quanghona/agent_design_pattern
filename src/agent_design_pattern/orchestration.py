@@ -43,6 +43,55 @@ class ReflectionAgent(IAgent):
         return result_message
 
 
+class LoopAgent(IAgent):
+    """
+    An agent that will loop until a certain condition is met.
+
+    This agent takes two parameters: an agent to loop and a condition to stop the loop.
+    The condition to stop the loop should be a function that takes an AgentMessage as an argument
+    and returns a boolean indicating whether the loop should stop or not.
+
+    Example:
+        def is_stop(message: AgentMessage) -> bool:
+            # stop when the message query is "stop"
+            return message.query == "stop"
+
+        agent = LoopAgent(
+            agent=Agent1(),
+            is_stop=is_stop
+        )
+
+        message = AgentMessage(query="hello")
+        result = agent.execute(message)
+
+    Attributes:
+        agent: The agent to loop.
+        is_stop: The condition to stop the loop.
+    """
+
+    def __init__(self,
+                 agent: IAgent,
+                 is_stop: Callable[[AgentMessage], bool],
+                 state_change_callback: Callable[[str], None] = None,
+                 name: str = None,
+                 **kwargs):
+        super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+        self.agent = agent
+        self.is_stop = is_stop
+
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        self._set_state("running")
+
+        while self.is_stop(message) is False:
+            message = self.agent.execute(message, **kwargs)
+            if message.execution_result != "success":
+                break
+
+        self._set_state("idle")
+        message.origin = self.name
+        return message
+
+
 class SequentialAgent(IAgent):
     """
     A sequential agent is an agent that will execute a list of agents in a particular order.
