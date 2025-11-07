@@ -27,17 +27,16 @@ class ReflectionAgent(IAgent):
         self.chain_reflection = chain_reflection
         self.task_response_key = task_response_key
 
-    def execute(self, message: AgentMessage, reflection: AgentMessage, **kwargs) -> AgentMessage:
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         self._set_state("running")
         message = self.chain_task.invoke(message, **kwargs)
         if message.execution_result != "success":
             return message
 
         self._set_state("reflecting")
-        if reflection.artifact is None:
-            reflection.artifact = {}
-        reflection.artifact[self.task_response_key.replace("artifact_", "")] = message.response
-        result_message = self.chain_reflection.invoke(reflection, **kwargs)
+        message.artifact = {}
+        message.artifact[self.task_response_key.replace("artifact_", "")] = message.response
+        result_message = self.chain_reflection.invoke(message, **kwargs)
 
         self._set_state("idle")
         result_message.origin = self.name
