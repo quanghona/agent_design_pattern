@@ -1,7 +1,7 @@
 import abc
 from collections.abc import Callable
 import json
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 
@@ -9,10 +9,13 @@ class AgentMessage(BaseModel):
     query: str = Field(...,description="The prompt consumed by agent's LLM. Note that this is a user prompt")
     origin: Optional[str] = Field(None, description="The agent that send this message")
     response: Optional[str] = Field(None, description="The response from the agent's LLM")
-    artifact: Optional[dict] = Field(None, description="""
+    responses: Optional[List[Tuple[str, str]]] = Field(None, description="""
+        If an agent generate multiple responses, either by same or different subagents, all of them will be stored here.
+        In each response tuple, the first one should be agent name or index, and second is the response""")
+    context: Optional[dict] = Field(None, description="""
         Agent additional material, which probably is the output of other agent or user entered.
-        There are various types of artifact produced by user and other agents.
-        The prompt that comsume this artifact need to explicitly know the format of this artifact.""")
+        There are various types of context produced by user and other agents.
+        The prompt that comsume this context need to explicitly know the format of this context.""")
     execution_result: Optional[str] = Field(None, description="The execution result of the agent. Can be success or error")
     error_message: Optional[str] = Field(None, description="The error message if the execution result is error.")
     # media: Optional[List[str]] = Field(None, description="The additional media content. Can be image, video, audio, etc.")
@@ -40,16 +43,17 @@ class AgentMessage(BaseModel):
         return dict(items)
 
     def to_dict(self) -> dict[str, Any]:
-        msg_json =  self.model_dump(exclude_none=True, exclude={"artifact"})
-        if self.artifact:
-            artifact_dict = self.flatten_dict(self.artifact, parent_key="artifact")
-            for k, v in artifact_dict.items():
+        msg_json =  self.model_dump(exclude_none=True, exclude={"context"})
+        if self.context:
+            context_dict = self.flatten_dict(self.context, parent_key="context")
+            for k, v in context_dict.items():
                 msg_json[k] = v
         return msg_json
 
     def dump_json(self) -> str:
         msg_dict = self.to_dict()
         return json.dumps(msg_dict)
+
 
 class LLMChain(abc.ABC):
     def __init__(self):
@@ -81,6 +85,7 @@ class IAgent(abc.ABC):
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         """The execution logic of the agent.
         Depends on the detail implementation by subclass, agent can calls tools or RAG or MCP during execution.
+        And agent may or may not utilize LLM, depends on the implementation. A lot of agents are pure orchestration without LLM in it.
         During execution, the implementation should update the state of the agent
         and/or push notification to target to update the progress.
         There are 3 types of agent:

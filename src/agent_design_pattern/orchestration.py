@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, List
 from agent_design_pattern.agent import IAgent, AgentMessage, LLMChain
 
 
@@ -18,7 +18,7 @@ class ReflectionAgent(IAgent):
     def __init__(self,
                  chain_task: LLMChain,
                  chain_reflection: LLMChain,
-                 task_response_key: str = "artifact_response",
+                 task_response_key: str = "context_response",
                  state_change_callback: Callable[[str], None] = None,
                  name: str = None,
                  **kwargs):
@@ -34,8 +34,8 @@ class ReflectionAgent(IAgent):
             return message
 
         self._set_state("reflecting")
-        message.artifact = {}
-        message.artifact[self.task_response_key.replace("artifact_", "")] = message.response
+        message.context = {}
+        message.context[self.task_response_key.replace("context_", "")] = message.response
         result_message = self.chain_reflection.invoke(message, **kwargs)
 
         self._set_state("idle")
@@ -79,13 +79,36 @@ class LoopAgent(IAgent):
         self.agent = agent
         self.is_stop = is_stop
 
-    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+    def execute(self,
+                message: AgentMessage,
+                result_strategy: str = 'last',    # last, last_n, all, custom
+                result_strategy_param: Callable[[str, str, List[str]], List[str]] | int | None = None,
+                **kwargs) -> AgentMessage:
+        assert result_strategy in ['last', 'last_n', 'all', 'custom'], f"result_strategy must be one of ['last', 'last_n', 'all', 'custom'], received {result_strategy}"
+        if result_strategy == 'last_n':
+            if not isinstance(result_strategy_param, int):
+                raise ValueError(f"result_strategy_param must be int when result_strategy is 'last_n', received {type(result_strategy_param)}")
+            elif result_strategy_param <= 0:
+                raise ValueError(f"result_strategy_param must be greater than 0 when result_strategy is 'last_n', received {result_strategy_param}")
+        elif result_strategy == 'custom' and not isinstance(result_strategy_param, Callable[[int, str], bool]):
+            raise ValueError("result_strategy_param must be a callable function when result_strategy is 'custom'")
+
         self._set_state("running")
+        message.responses = []
+        if result_strategy == 'last':
+            result_strategy = 'last_n'
+            result_strategy_param = 1
 
         while self.is_stop(message) is False:
             message = self.agent.execute(message, **kwargs)
             if message.execution_result != "success":
                 break
+
+            message.responses.append((self.agent.name, message.response))
+            if result_strategy == 'last_n':
+                message.responses = message.responses[-result_strategy_param:]
+            elif result_strategy == 'custom':
+                message.responses = result_strategy_param(self.agent.name, message, message.responses)
 
         self._set_state("idle")
         message.origin = self.name
@@ -110,7 +133,7 @@ class SequentialAgent(IAgent):
     Attributes:
         agents: The list of agents to execute in sequence.
     """
-    def __init__(self, agents: list[IAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
+    def __init__(self, agents: List[IAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
         super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
         self.agents = agents
 
