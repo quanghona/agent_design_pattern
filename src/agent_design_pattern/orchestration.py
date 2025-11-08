@@ -175,7 +175,6 @@ class SequentialAgent(BaseAgent):
 class ParallelAgent(BaseAgent):
     """
     A parallel agent is an agent that will execute a list of agents in parallel.
-
     The agent will return a list of AgentMessage where each message is the result of the corresponding agent in the list.
 
     Example:
@@ -203,7 +202,7 @@ class ParallelAgent(BaseAgent):
 
         # if torch is used, we can use torch.multiprocessing
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(agent.invoke, message, **kwargs) for agent, message in zip(self.agents, messages)]
+            futures = [executor.submit(agent.execute, message, **kwargs) for agent, message in zip(self.agents, messages)]
             messages = [future.result() for future in concurrent.futures.as_completed(futures)]
 
         result_message = AgentMessage(
