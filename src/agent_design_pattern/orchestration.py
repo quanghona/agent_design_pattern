@@ -1,4 +1,4 @@
-from typing import Callable, List
+from typing import Callable, Generator, List
 from agent_design_pattern.agent import IAgent, AgentMessage, LLMChain
 
 
@@ -71,7 +71,7 @@ class LoopAgent(IAgent):
 
     def __init__(self,
                  agent: IAgent,
-                 is_stop: Callable[[AgentMessage], bool],
+                 is_stop: Callable[[AgentMessage], bool] | Generator[bool, None, None],
                  state_change_callback: Callable[[str], None] = None,
                  name: str = None,
                  **kwargs):
@@ -99,16 +99,35 @@ class LoopAgent(IAgent):
             result_strategy = 'last_n'
             result_strategy_param = 1
 
-        while self.is_stop(message) is False:
-            message = self.agent.execute(message, **kwargs)
-            if message.execution_result != "success":
-                break
-
+        def update_responses():
             message.responses.append((self.agent.name, message.response))
             if result_strategy == 'last_n':
                 message.responses = message.responses[-result_strategy_param:]
             elif result_strategy == 'custom':
                 message.responses = result_strategy_param(self.agent.name, message, message.responses)
+
+        i = 0
+        if isinstance(self.is_stop, Callable):
+            while self.is_stop(message) is False:
+                self._set_state("running iteration " + str(i))
+                i += 1
+                message = self.agent.execute(message, **kwargs)
+                if message.execution_result != "success":
+                    break
+                update_responses()
+        elif isinstance(self.is_stop, Generator):
+            try:
+                while next(self.is_stop) is False:
+                    self._set_state("running iteration " + str(i))
+                    i += 1
+                    message = self.agent.execute(message, **kwargs)
+                    if message.execution_result != "success":
+                        break
+                    update_responses()
+            except StopIteration as e:
+                pass
+        else:
+            raise ValueError(f"is_stop must be a callable or a generator, received {type(self.is_stop)}")
 
         self._set_state("idle")
         message.origin = self.name
