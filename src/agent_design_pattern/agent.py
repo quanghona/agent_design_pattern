@@ -67,16 +67,16 @@ class LLMChain(abc.ABC):
         return self.invoke(message, **kwargs)
 
 
-class IAgent(abc.ABC):
+class BaseAgent(abc.ABC):
     _object_count = 0
     """An interface for agent implementations."""
     def __init__(self, state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
         super().__init__()
-        IAgent._object_count += 1
+        BaseAgent._object_count += 1
         self._state = "idle"
         self.tools = []     # internal tools, RAG or MCP
         self.state_change_callback = state_change_callback
-        self.name = name if name else f"{type(self).__name__}_{IAgent._object_count}"
+        self.name = name if name else f"{type(self).__name__}_{BaseAgent._object_count}"
         # TODO: maybe follow A2A's agent card and agent skill
         # self.card = None
         # self.skills = None

@@ -1,8 +1,10 @@
 from typing import Callable, Generator, List
-from agent_design_pattern.agent import IAgent, AgentMessage, LLMChain
+
+import concurrent
+from agent_design_pattern.agent import BaseAgent, AgentMessage, LLMChain
 
 
-class ReflectionAgent(IAgent):
+class ReflectionAgent(BaseAgent):
     """
     An agent that is capable of self-reflection.
 
@@ -43,7 +45,7 @@ class ReflectionAgent(IAgent):
         return result_message
 
 
-class LoopAgent(IAgent):
+class LoopAgent(BaseAgent):
     """
     An agent that will loop until a certain condition is met.
 
@@ -70,7 +72,7 @@ class LoopAgent(IAgent):
     """
 
     def __init__(self,
-                 agent: IAgent,
+                 agent: BaseAgent,
                  is_stop: Callable[[AgentMessage], bool] | Generator[bool, None, None],
                  state_change_callback: Callable[[str], None] = None,
                  name: str = None,
@@ -134,7 +136,7 @@ class LoopAgent(IAgent):
         return message
 
 
-class SequentialAgent(IAgent):
+class SequentialAgent(BaseAgent):
     """
     A sequential agent is an agent that will execute a list of agents in a particular order.
 
@@ -152,7 +154,7 @@ class SequentialAgent(IAgent):
     Attributes:
         agents: The list of agents to execute in sequence.
     """
-    def __init__(self, agents: List[IAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
+    def __init__(self, agents: List[BaseAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
         super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
         self.agents = agents
 
@@ -169,3 +171,87 @@ class SequentialAgent(IAgent):
 
         return message
 
+
+class ParallelAgent(BaseAgent):
+    """
+    A parallel agent is an agent that will execute a list of agents in parallel.
+
+    The agent will return a list of AgentMessage where each message is the result of the corresponding agent in the list.
+
+    Example:
+        agent1 = Agent1()
+        agent2 = Agent2()
+
+        parallel_agent = ParallelAgent([agent1, agent2])
+
+        messages = [AgentMessage(query="hello"), AgentMessage(query="world")]
+        results = parallel_agent.execute(messages)
+
+    Attributes:
+        agents: The list of agents to execute in parallel.
+    """
+    def __init__(self, agents: List[BaseAgent], state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
+        super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+        self.agents = agents
+
+    def execute(self, messages: AgentMessage | List[AgentMessage], **kwargs) -> AgentMessage:
+        # If received a single message, all agents will process the same message
+        if isinstance(messages, AgentMessage):
+            messages = [messages] * len(self.agents)
+        elif len(messages) != len(self.agents):
+            raise ValueError("messages must be a list of AgentMessage with the same length as the number of agents")
+
+        # if torch is used, we can use torch.multiprocessing
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(agent.invoke, message, **kwargs) for agent, message in zip(self.agents, messages)]
+            messages = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+        result_message = AgentMessage(
+            query="",
+            origin=self.name,
+            responses=[(agent.name, message.response) for agent, message in zip(self.agents, messages)],
+            execution_result="success")
+        return result_message
+
+
+# class CoordinatorAgent(BaseAgent):
+#     def __init__(self, coordinator: BaseAgent, workers: List[BaseAgent], summary_agent: BaseAgent = None, summary_prompt: str = None, state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
+#         super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+#         self.coordinator = coordinator
+#         self.workers = workers
+#         self.summary_agent = summary_agent
+#         self.summary_prompt = summary_prompt
+
+#     def parse_plan(self, plan: str) -> List[tuple(AgentMessage, BaseAgent)]:
+#         return []
+
+#     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+#         self._set_state("planning")
+#         message = self.coordinator.execute(message, **kwargs)
+
+#         if message.execution_result != "success":
+#             return message
+
+#         steps = self.parse_plan(message.response)
+#         sub_task_result = []
+#         # TODO: check step dependency and parallelize steps to speed up
+#         for step_msg, step_agent in steps:
+#             self._set_state(f"worker {step_agent.name} running")
+#             sub_task_result.append(step_agent.execute(step_msg, **kwargs))
+
+#         if self.summary_agent is None:
+#             if self.summary_prompt is not None:
+#                 # Use coordinator as summary agent
+#                 self._set_state("finalizing")
+#                 message.query = self.summary_prompt
+#                 message.context = {"results": sub_task_result}
+#                 message = self.coordinator.execute(message, **kwargs)
+#             # if no summary prompt is provided, just return the result from workers
+#         else:
+#             self._set_state("finalizing")
+#             message.context = {"results": sub_task_result}
+#             message = self.summary_agent.execute(message, **kwargs)
+
+#         self._set_state("idle")
+#         message.origin = self.name
+#         return message
