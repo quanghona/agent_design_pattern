@@ -1,4 +1,5 @@
-from typing import Callable, Generator, List
+import random
+from typing import Callable, Generator, List, Literal, Tuple
 
 import concurrent
 from agent_design_pattern.agent import BaseAgent, AgentMessage, LLMChain
@@ -264,3 +265,46 @@ class CoordinatorAgent(BaseAgent):
         message.origin = self.name
         return message
 
+
+class DebateAgent(BaseAgent):
+    def __init__(self,
+                 agents: List[BaseAgent],
+                 pick_strategy: Literal["round_robin", "random"] | Callable[[List[BaseAgent]], BaseAgent] = "round_robin",
+                 max_turns: int = 5,
+                 should_stop: Callable[[AgentMessage], bool] = None,
+                 state_change_callback: Callable[[str], None] = None,
+                 name: str = None,
+                 **kwargs):
+        super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+        self.agents = agents
+        self.pick_strategy = pick_strategy
+        self.max_turns = max_turns
+        self.should_stop = should_stop
+
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        n = 0
+        message.responses = []
+
+        # All response turn are stored in the message.responses
+        while n < self.max_turns:
+            if self.pick_strategy == "round_robin":
+                next_turn_agent = self.agents[n % len(self.agents)]
+            elif self.pick_strategy == "random":
+                next_turn_agent = random.choice(self.agents)
+            elif isinstance(self.pick_strategy, Callable):
+                next_turn_agent = self.pick_strategy(self.agents)
+            else:
+                raise ValueError("pick_strategy must be one of 'round_robin', 'random' or a function")
+
+            self._set_state(f"turn {n}: agent {next_turn_agent.name} running")
+            message = next_turn_agent.execute(message, **kwargs)
+            message.responses.append((next_turn_agent.name, message.response))
+            n += 1
+
+            if message.execution_result != "success" or self.should_stop(message):
+                break
+
+        self._set_state("idle")
+        message.origin = self.name
+
+        return message
