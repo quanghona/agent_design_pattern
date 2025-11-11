@@ -84,30 +84,17 @@ class LoopAgent(BaseAgent):
 
     def execute(self,
                 message: AgentMessage,
-                result_strategy: str = 'last',    # last, last_n, all, custom
-                result_strategy_param: Callable[[str, str, List[str]], List[str]] | int | None = None,
+                keep_result: int | Callable[[str, str, List[str]], List[str]] = 1,
                 **kwargs) -> AgentMessage:
-        assert result_strategy in ['last', 'last_n', 'all', 'custom'], f"result_strategy must be one of ['last', 'last_n', 'all', 'custom'], received {result_strategy}"
-        if result_strategy == 'last_n':
-            if not isinstance(result_strategy_param, int):
-                raise ValueError(f"result_strategy_param must be int when result_strategy is 'last_n', received {type(result_strategy_param)}")
-            elif result_strategy_param <= 0:
-                raise ValueError(f"result_strategy_param must be greater than 0 when result_strategy is 'last_n', received {result_strategy_param}")
-        elif result_strategy == 'custom' and not isinstance(result_strategy_param, Callable[[int, str], bool]):
-            raise ValueError("result_strategy_param must be a callable function when result_strategy is 'custom'")
-
         self._set_state("running")
         message.responses = []
-        if result_strategy == 'last':
-            result_strategy = 'last_n'
-            result_strategy_param = 1
 
         def update_responses():
             message.responses.append((self.agent.name, message.response))
-            if result_strategy == 'last_n':
-                message.responses = message.responses[-result_strategy_param:]
-            elif result_strategy == 'custom':
-                message.responses = result_strategy_param(self.agent.name, message, message.responses)
+            if isinstance(keep_result, int) and keep_result > 0:
+                message.responses = message.responses[-keep_result:]
+            elif isinstance(keep_result, Callable):
+                message.responses = keep_result(self.agent.name, message, message.responses)
 
         i = 0
         if isinstance(self.is_stop, Callable):
