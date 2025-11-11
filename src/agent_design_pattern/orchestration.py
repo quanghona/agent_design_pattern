@@ -213,44 +213,54 @@ class ParallelAgent(BaseAgent):
         return result_message
 
 
-# class CoordinatorAgent(BaseAgent):
-#     def __init__(self, coordinator: BaseAgent, workers: List[BaseAgent], summary_agent: BaseAgent = None, summary_prompt: str = None, state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
-#         super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
-#         self.coordinator = coordinator
-#         self.workers = workers
-#         self.summary_agent = summary_agent
-#         self.summary_prompt = summary_prompt
+class CoordinatorAgent(BaseAgent):
+    def __init__(self,
+                 planner_agent: BaseAgent,
+                 parse_plan: Callable[[str, List[BaseAgent]], List[Tuple[AgentMessage, BaseAgent]]],
+                 workers: List[BaseAgent],
+                 summary_chain: LLMChain = None,
+                 summary_steps_key: str = "context_results",
+                 state_change_callback: Callable[[str], None] | None = None,
+                 name: str = None,
+                 **kwargs):
+        super().__init__(state_change_callback=state_change_callback, name=name, **kwargs)
+        self.planner_agent = planner_agent
+        self.parse_plan = parse_plan
+        self.workers = {worker.__name__: worker for worker in workers}
+        self.summary_chain = summary_chain
+        if not summary_steps_key.startswith("context_"):
+            raise ValueError("summary_steps_key must start with 'context_'")
+        self.summary_steps_key = summary_steps_key.replace("context_", "")
 
-#     def parse_plan(self, plan: str) -> List[tuple(AgentMessage, BaseAgent)]:
-#         return []
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        self._set_state("planning")
+        message = self.coordinator.execute(message, **kwargs)
 
-#     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
-#         self._set_state("planning")
-#         message = self.coordinator.execute(message, **kwargs)
+        if message.execution_result != "success":
+            return message
 
-#         if message.execution_result != "success":
-#             return message
+        steps = self.parse_plan(message.response, self.workers.values())
+        sub_task_result = []
+        # TODO: check step dependency and parallelize steps to speed up
+        for i, step_msg, step_agent, dependencies in enumerate(steps):
+            step_msg.context = {self.summary_steps_key: sub_task_result}
+            self._set_state(f"step {i}: worker {step_agent.name} running")
+            sub_task_result.append(step_agent.execute(step_msg, **kwargs))
 
-#         steps = self.parse_plan(message.response)
-#         sub_task_result = []
-#         # TODO: check step dependency and parallelize steps to speed up
-#         for step_msg, step_agent in steps:
-#             self._set_state(f"worker {step_agent.name} running")
-#             sub_task_result.append(step_agent.execute(step_msg, **kwargs))
+        if self.summary_chain is None:
+            if self.summary_prompt is not None:
+                # Use coordinator as summary agent
+                self._set_state(f"{self.coordinator.name} finalizing")
+                message.query = self.summary_prompt
+                message.context = {self.summary_steps_key: sub_task_result}
+                message = self.coordinator.execute(message, **kwargs)
+            # if no summary prompt is provided, just return the result from workers
+        else:
+            self._set_state("finalizing")
+            message.context = {self.summary_steps_key: sub_task_result}
+            message = self.summary_chain.execute(message, **kwargs)
 
-#         if self.summary_agent is None:
-#             if self.summary_prompt is not None:
-#                 # Use coordinator as summary agent
-#                 self._set_state("finalizing")
-#                 message.query = self.summary_prompt
-#                 message.context = {"results": sub_task_result}
-#                 message = self.coordinator.execute(message, **kwargs)
-#             # if no summary prompt is provided, just return the result from workers
-#         else:
-#             self._set_state("finalizing")
-#             message.context = {"results": sub_task_result}
-#             message = self.summary_agent.execute(message, **kwargs)
+        self._set_state("idle")
+        message.origin = self.name
+        return message
 
-#         self._set_state("idle")
-#         message.origin = self.name
-#         return message

@@ -1,7 +1,7 @@
 import abc
 from collections.abc import Callable
 import json
-from typing import Any, List, Optional, Tuple
+from typing import Any, ClassVar, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 
 
@@ -16,7 +16,7 @@ class AgentMessage(BaseModel):
         Agent additional material, which probably is the output of other agent or user entered.
         There are various types of context produced by user and other agents.
         The prompt that comsume this context need to explicitly know the format of this context.""")
-    execution_result: Optional[str] = Field(None, description="The execution result of the agent. Can be success or error")
+    execution_result: Optional[Literal["success", "error"]] = Field(None, description="The execution result of the agent. Can be success or error")
     error_message: Optional[str] = Field(None, description="The error message if the execution result is error.")
     # media: Optional[List[str]] = Field(None, description="The additional media content. Can be image, video, audio, etc.")
     # media_type: Optional[List[str]] = Field(None, description="The media type associated with the media.")
@@ -68,13 +68,12 @@ class LLMChain(abc.ABC):
 
 
 class BaseAgent(abc.ABC):
-    _object_count = 0
+    _object_count: ClassVar[int] = 0
     """An interface for agent implementations."""
     def __init__(self, state_change_callback: Callable[[str], None] = None, name: str = None, **kwargs):
         super().__init__()
         BaseAgent._object_count += 1
         self._state = "idle"
-        self.tools = []     # internal tools, RAG or MCP
         self.state_change_callback = state_change_callback
         self.name = name if name else f"{type(self).__name__}_{BaseAgent._object_count}"
         # TODO: maybe follow A2A's agent card and agent skill
