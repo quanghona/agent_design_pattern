@@ -50,7 +50,12 @@ class CasualSingleTurnChain(LLMChain):
             # generate output tokens
             output = self.model.generate(**inputs.to(self.device), **kwargs)
             # decode output tokens into text
-            return self.tokenizer.batch_decode(output[:, inputs.input_ids.shape[-1]:], skip_special_tokens=True)
+            output = self.tokenizer.batch_decode(output[:, inputs.input_ids.shape[-1]:], skip_special_tokens=True)
+            for i, out_i in enumerate(output):
+                if "</think>" in out_i and "<think>" not in out_i:
+                    out_i = "<think>" + out_i
+                output[i] = re.sub(r'<think>.*?</think>', '', out_i, flags=re.DOTALL)
+            return output
 
         output = get_response(chat_messages)
         if "<tool_call>" in output:
