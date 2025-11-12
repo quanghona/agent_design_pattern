@@ -284,7 +284,7 @@ class CoordinatorAgent(BaseAgent):
 class DebateAgent(BaseAgent):
     def __init__(self,
                  agents: List[BaseAgent],
-                 pick_strategy: Literal["round_robin", "random"] | Callable[[List[BaseAgent]], BaseAgent] = "round_robin",
+                 pick_strategy: Literal["round_robin", "random", "simultaneous"] | Callable[[List[BaseAgent]], BaseAgent] = "round_robin",
                  max_turns: int = 5,
                  should_stop: Callable[[AgentMessage], bool] = None,
                  state_change_callback: Callable[[str], None] = None,
@@ -300,21 +300,28 @@ class DebateAgent(BaseAgent):
         n = 0
         message.responses = []
 
-        # All response turn are stored in the message.responses
+        # All response turns are stored in the message.responses
         while n < self.max_turns:
             if self.pick_strategy == "round_robin":
                 next_turn_agent = self.agents[n % len(self.agents)]
+            elif self.pick_strategy == "simultaneous":
+                self._set_state(f"turn {n}: all agents running")
+                # TODO: parallelize the execution
+                current_turn_messages = [agent.execute(message, **kwargs) for agent in self.agents]
+                message.responses.extend([(msg.origin, msg.response) for msg in current_turn_messages])
+                n += len(self.agents)
             elif self.pick_strategy == "random":
                 next_turn_agent = random.choice(self.agents)
             elif isinstance(self.pick_strategy, Callable):
                 next_turn_agent = self.pick_strategy(self.agents)
             else:
-                raise ValueError("pick_strategy must be one of 'round_robin', 'random' or a function")
+                raise ValueError("pick_strategy must be one of 'round_robin', 'random', 'simutaneous' or a function")
 
-            self._set_state(f"turn {n}: agent {next_turn_agent.name} running")
-            message = next_turn_agent.execute(message, **kwargs)
-            message.responses.append((next_turn_agent.name, message.response))
-            n += 1
+            if self.pick_strategy != "simultaneous":
+                self._set_state(f"turn {n}: agent {next_turn_agent.name} running")
+                message = next_turn_agent.execute(message, **kwargs)
+                message.responses.append((next_turn_agent.name, message.response))
+                n += 1
 
             if message.execution_result != "success" or self.should_stop(message):
                 break
