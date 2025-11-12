@@ -34,6 +34,7 @@ class ReflectionAgent(BaseAgent):
         self._set_state("running")
         message = self.chain_task.invoke(message, **kwargs)
         if message.execution_result != "success":
+            message.error = "Call chain not success. Received: " + message.execution_result
             return message
 
         self._set_state("reflecting")
@@ -202,6 +203,33 @@ class ParallelAgent(BaseAgent):
 
 
 class CoordinatorAgent(BaseAgent):
+    """
+    This coordinator agent compose of 3 stages:
+    - Planning: a planner agent will plan the steps to be executed.
+    The planner recieves input query and returns a list of steps to be executed.
+    For each step, it contains 3 fields:
+        + worker: the worker agent that will execute the step
+        + message: the instruction for the worker agent
+        + dependencies: the dependencies of the step, this is picked from the result of the previous steps. The planner is responsible for choosing which results are needed for current step
+    - Execution: For each step, an assigned worker will execute the step. In current version, steps are performed sequentially.
+    - Summary: a summary agent will summarize the results so far and generate final answer.
+    The summary agent recieves all results and write a final answer. This stage is optional.
+
+    Example:
+        planner_agent = PlannerAgent()
+        worker_agent = WorkerAgent()
+        summary_agent = SummaryAgent()
+
+        coordinator_agent = CoordinatorAgent(planner_agent, worker_agent, summary_agent)
+
+        message = AgentMessage(query="hello")
+        result = coordinator_agent.execute(message)
+
+    Attributes:
+        planner_agent: The agent that will plan the steps to be executed.
+        workers: The list of agents that will execute the steps.
+        summary_agent: The agent that will summarize the results so far and generate final answer.
+    """
     def __init__(self,
                  planner_agent: BaseAgent,
                  parse_plan: Callable[[str, List[BaseAgent]], List[Tuple[AgentMessage, BaseAgent]]],
