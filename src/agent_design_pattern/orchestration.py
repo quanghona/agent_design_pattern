@@ -1,7 +1,8 @@
 import random
 from typing import Callable, Generator, List, Literal, Tuple
-
 import concurrent
+from sacrebleu import sentence_bleu
+
 from agent_design_pattern.agent import BaseAgent, AgentMessage, LLMChain
 
 
@@ -213,7 +214,8 @@ class CoordinatorAgent(BaseAgent):
         + dependencies: the dependencies of the step, this is picked from the result of the previous steps. The planner is responsible for choosing which results are needed for current step
     - Execution: For each step, an assigned worker will execute the step. In current version, steps are performed sequentially.
     - Summary: a summary agent will summarize the results so far and generate final answer.
-    The summary agent recieves all results and write a final answer. This stage is optional.
+    The summary agent recieves all results and write a final answer.
+    This stage is optional.
 
     Example:
         planner_agent = PlannerAgent()
@@ -329,4 +331,66 @@ class DebateAgent(BaseAgent):
         self._set_state("idle")
         message.origin = self.name
 
+        return message
+
+
+class VotingAgent(BaseAgent):
+    def __init__(self,
+                 agents: List[BaseAgent],
+                 voting_method: Literal["agent_forest", "llm_score", "majority_vote"],
+                 voting_prompt: str = None,
+                 get_score_func: Callable[[str], float] = float):   # approval, cummulative, ranked
+        super().__init__()
+        self.agents = agents
+        self.voting_method = voting_method
+        self.voting_prompt = voting_prompt
+        self.get_score_func = get_score_func
+
+    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        if self.voting_method == "agent_forest":
+            # https://arxiv.org/pdf/2402.05120
+            scores = {agent.name: 0 for agent in self.agents}
+            message_map = {name: msg for name, msg in message.responses}
+            for agent_name, msg in message.responses:
+                total_score = 0
+                for other_agent in self.agents:
+                    if agent_name == other_agent.name:
+                        continue
+                    total_score += sentence_bleu(msg, [message_map[other_agent.name]], lowercase=True).score
+                scores[other_agent.name] = total_score
+            highest_score_agent = max(scores, key=scores.get)
+            message.response = message_map[highest_score_agent]
+
+        elif self.voting_method == "llm_score":
+            if self.voting_prompt is None:
+                raise ValueError("voting_prompt is required for llm_score voting method")
+            message.query = self.voting_prompt
+            scores = {agent.name: 0 for agent in self.agents}
+            message_map = {name: msg for name, msg in message.responses}
+            for response in message.responses:
+                total_score = 0
+                for agent in self.agents:
+                    if response[0] == agent.name:
+                        continue
+
+                    score = agent.execute(message, **kwargs)
+                    try:
+                        total_score += self.get_score_func(score.response)
+                    except ValueError as e:
+                        # unable to parse the score
+                        pass
+                scores[agent.name] += self.get_score_func(score.response)
+                # The highest or average score will return the same response
+                # Additional note: because of the score, we even can rank all candidate responses and output a leaderboard.
+            highest_score_agent = max(scores, key=scores.get)
+            message.response = message_map[highest_score_agent]
+
+        elif self.voting_method == "majority_vote":
+            raise NotImplementedError
+
+        else:
+            raise ValueError("voting_method must be one of 'agent_forest', 'llm_score', 'majority_vote'")
+
+        message.origin = self.name
+        message.execution_result = "success"
         return message
