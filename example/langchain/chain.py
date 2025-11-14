@@ -1,8 +1,8 @@
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
-import re
 
+from agent_design_pattern import utils
 from agent_design_pattern.agent import AgentMessage, LLMChain
 
 
@@ -30,16 +30,19 @@ class CasualOllamaSingleTurnChain(LLMChain):
                 response
             ]
             for tool_call in response.tool_calls:
-                tool_response = self.tools[tool_call["name"]].invoke(tool_call["args"])
-                prompt.append(ToolMessage(str(tool_response), tool_call_id=tool_call["id"]))
+                if tool_call["name"] not in self.tools:
+                    prompt.append(ToolMessage(tool_call["name"] + " does not exist"), tool_call_id=tool_call["id"])
+                else:
+                    try:
+                        tool_response = self.tools[tool_call["name"]](tool_call["args"])
+                        prompt.append(ToolMessage(str(tool_response), tool_call_id=tool_call["id"]))
+                    except Exception as e:
+                        prompt.append(ToolMessage(f"Encounter error while executing tool {tool_call['name']}", tool_call_id=tool_call["id"]))
             response = self.llm.invoke(prompt, **kwargs)
             response = response.content
         else:
             response = response.content
-        # Snippet to remove thinking
-        if "</think>" in response and "<think>" not in response:
-            response = "<think>" + response
-        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+        response = utils.remove_thinking(response)
         message.response = response
         message.execution_result = "success"
 
@@ -75,15 +78,18 @@ class CasualOllamaMultiTurnsChain(LLMChain):
         if response.tool_calls:
             prompt.append(response)
             for tool_call in response.tool_calls:
-                tool_response = self.tools[tool_call["name"]].invoke(tool_call["args"])
-                prompt.append(ToolMessage(str(tool_response), tool_call_id=tool_call["id"]))
+                if tool_call["name"] not in self.tools:
+                    prompt.append(ToolMessage(tool_call["name"] + " does not exist"), tool_call_id=tool_call["id"])
+                else:
+                    try:
+                        tool_response = self.tools[tool_call["name"]](tool_call["args"])
+                        prompt.append(ToolMessage(str(tool_response), tool_call_id=tool_call["id"]))
+                    except Exception as e:
+                        prompt.append(ToolMessage(f"Encounter error while executing tool {tool_call['name']}", tool_call_id=tool_call["id"]))
             response = self.llm.invoke(prompt, **kwargs)
         response = response.content
 
-        # Snippet to remove thinking
-        if "</think>" in response and "<think>" not in response:
-            response = "<think>" + response
-        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+        response = utils.remove_thinking(response)
         if message.responses is None:
             message.responses = []
         message.responses.append((self.name, response))

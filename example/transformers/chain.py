@@ -1,4 +1,5 @@
 from typing import List
+from agent_design_pattern import utils
 from agent_design_pattern.agent import AgentMessage, LLMChain
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import re
@@ -52,17 +53,18 @@ class CasualSingleTurnChain(LLMChain):
             # decode output tokens into text
             output = self.tokenizer.batch_decode(output[:, inputs.input_ids.shape[-1]:], skip_special_tokens=True)
             for i, out_i in enumerate(output):
-                if "</think>" in out_i and "<think>" not in out_i:
-                    out_i = "<think>" + out_i
-                output[i] = re.sub(r'<think>.*?</think>', '', out_i, flags=re.DOTALL)
+                output[i] = utils.remove_thinking(out_i)
             return output
 
         output = get_response(chat_messages)
         if "<tool_call>" in output:
-            tool_calls, tool_results = self.parse_call_tools(output)
-            chat_messages.append({"role": "assistant", "tool_calls": [{"type": "function", "function": tool_call} for tool_call in tool_calls]})
-            for tool_result in tool_results:
-                chat_messages.append({"role": "tool", "content": str(tool_result)})
+            try:
+                tool_calls, tool_results = self.parse_call_tools(output)
+                chat_messages.append({"role": "assistant", "tool_calls": [{"type": "function", "function": tool_call} for tool_call in tool_calls]})
+                for tool_result in tool_results:
+                    chat_messages.append({"role": "tool", "content": str(tool_result)})
+            except Exception as e:
+                chat_messages.append({"role": "assistant", "content": "Encountered error while calling tool\n" + str(e)})
             output = get_response(chat_messages)
 
         message.response = output[0]
@@ -124,10 +126,13 @@ class CasualMultiTurnsChain(LLMChain):
 
         output = get_response(chat_messages)
         if "<tool_call>" in output:
-            tool_calls, tool_results = self.parse_call_tools(output)
-            chat_messages.append({"role": "assistant", "tool_calls": [{"type": "function", "function": tool_call} for tool_call in tool_calls]})
-            for tool_result in tool_results:
-                chat_messages.append({"role": "tool", "content": str(tool_result)})
+            try:
+                tool_calls, tool_results = self.parse_call_tools(output)
+                chat_messages.append({"role": "assistant", "tool_calls": [{"type": "function", "function": tool_call} for tool_call in tool_calls]})
+                for tool_result in tool_results:
+                    chat_messages.append({"role": "tool", "content": str(tool_result)})
+            except Exception as e:
+                chat_messages.append({"role": "assistant", "content": "Encountered error while calling tool\n" + str(e)})
             output = get_response(chat_messages)
 
         message.response = output[0]
