@@ -1,17 +1,19 @@
 [project]
 name = "agent-design-pattern"
-version = "0.0.1"
+version = "0.1.0"
 description = "Agent design pattern / agent orchestration"
 readme = "README.md"
 requires-python = ">=3.10.12"
 license = { text = "MIT" }
-dependencies = [
-    "sacrebleu>=2.5.1",
-]
+dependencies = []
 
 [tool.uv.workspace]
 members = [
     "example",
+    "src/core",
+    "src/langchain",
+    "src/llamaindex",
+    "src/transformers",
 ]
 
 [dependency-groups]
