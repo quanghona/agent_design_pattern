@@ -1,8 +1,9 @@
 import concurrent.futures
 import random
-from typing import Callable, Generator, List, Literal, Tuple
+from typing import Callable, Dict, Generator, List, Literal, Tuple
 from a2a.types import AgentCard
 
+from pydantic import Field
 from sacrebleu import sentence_bleu
 
 from .agent import AgentMessage, BaseAgent
@@ -22,6 +23,19 @@ class ReflectionAgent(BaseAgent):
         chain: The BaseLLMChain to use for executing the message.
         chain_reflection: The prompt to use for self-reflection.
     """
+
+    chain_task: BaseLLMChain = Field(
+        ..., description="LLM chain that perform the main task"
+    )
+    chain_reflection: BaseLLMChain = Field(
+        ...,
+        description="LLM chain that perform reflection on the result of the main task",
+    )
+    task_response_key: str = Field(
+        "context_response",
+        description="""The key of which to store the context (e.g. intermediate result) during generation.
+        Note that the key need to start with 'context_'""",
+    )
 
     def __init__(
         self,
@@ -87,6 +101,12 @@ class LoopAgent(BaseAgent):
         is_stop: The condition to stop the loop.
     """
 
+    agent: BaseAgent = Field(..., description="The agent to loop.")
+    is_stop: Callable[[AgentMessage], bool] | Generator[bool, None, None] = Field(
+        ...,
+        description="The condition to stop the loop. It should be a function that takes an AgentMessage as an argument and returns a boolean.",
+    )
+
     def __init__(
         self,
         card: AgentCard,
@@ -100,6 +120,7 @@ class LoopAgent(BaseAgent):
         )
         self.agent = agent
         self.is_stop = is_stop
+        self.agent.state_change_callback = self._child_state_observer
 
     def execute(
         self,
@@ -151,6 +172,11 @@ class LoopAgent(BaseAgent):
         message.origin = self.card.name
         return message
 
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self, [self.agent], "sequential"
+        )
+
 
 class SequentialAgent(BaseAgent):
     """
@@ -171,6 +197,12 @@ class SequentialAgent(BaseAgent):
         agents: The list of agents to execute in sequence.
     """
 
+    agents: List[BaseAgent] = Field(
+        ...,
+        description="""The list of agents to execute in sequence.
+            The order of the sequence is the order of the execution.""",
+    )
+
     def __init__(
         self,
         card: AgentCard,
@@ -182,6 +214,8 @@ class SequentialAgent(BaseAgent):
             state_change_callback=state_change_callback, card=card, **kwargs
         )
         self.agents = agents
+        for agent in self.agents:
+            agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         for agent in self.agents:
@@ -195,6 +229,11 @@ class SequentialAgent(BaseAgent):
         message.origin = self.card.name
 
         return message
+
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self, self.agents, "sequential"
+        )
 
 
 class ParallelAgent(BaseAgent):
@@ -215,6 +254,10 @@ class ParallelAgent(BaseAgent):
         agents: The list of agents to execute in parallel.
     """
 
+    agents: List[BaseAgent] = Field(
+        ..., description="""The list of agents to execute in parallel"""
+    )
+
     def __init__(
         self,
         card: AgentCard,
@@ -226,6 +269,8 @@ class ParallelAgent(BaseAgent):
             state_change_callback=state_change_callback, card=card, **kwargs
         )
         self.agents = agents
+        for agent in self.agents:
+            agent.state_change_callback = self._child_state_observer
 
     def execute(  # type: ignore
         self, messages: AgentMessage | List[AgentMessage], **kwargs
@@ -238,6 +283,7 @@ class ParallelAgent(BaseAgent):
                 "messages must be a list of AgentMessage with the same length as the number of agents"
             )
 
+        self._set_state("running")
         # if torch is used, we can use torch.multiprocessing
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [
@@ -257,7 +303,13 @@ class ParallelAgent(BaseAgent):
             ],
             execution_result="success",
         )  # type: ignore
+        self._set_state("idle")
         return result_message
+
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self, self.agents, "parallel"
+        )
 
 
 class CoordinatorAgent(BaseAgent):
@@ -289,6 +341,26 @@ class CoordinatorAgent(BaseAgent):
         workers: The list of agents that will execute the steps.
         summary_agent: The agent that will summarize the results so far and generate final answer.
     """
+
+    planner_agent: BaseAgent = Field(
+        ..., description="""The agent that will plan the steps to be executed"""
+    )
+    workers: Dict[str, BaseAgent] = Field(
+        ...,
+        description="""The list of agents that will execute the steps based on the plan""",
+    )
+    summary_chain: BaseLLMChain | None = Field(
+        None,
+        description="""The summary chain that will summarize the results so far and generate final answer""",
+    )
+    summary_prompt: str | None = Field(
+        None, description="""The prompt that will be used by the summary chain"""
+    )
+    summary_steps_key: str = Field(
+        "context_results",
+        description="""The key of which to store the context (e.g. intermediate result) during generation.
+        Note that the key need to start with 'context_'""",
+    )
 
     def __init__(
         self,
@@ -348,8 +420,27 @@ class CoordinatorAgent(BaseAgent):
         message.origin = self.card.name
         return message
 
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self, [self.planner_agent, *list(self.workers.values())], "sequential"
+        )
+
 
 class DebateAgent(BaseAgent):
+    agents: List[BaseAgent] = Field(
+        ..., description="""The list of agents participate in the conversation"""
+    )
+    pick_strategy: (
+        Literal["round_robin", "random", "simultaneous"]
+        | Callable[[List[BaseAgent]], BaseAgent]
+    ) = Field(
+        "round_robin", description="The strategy to pick the agent to run the next turn"
+    )
+    max_turns: int = Field(5, description="The maximum number of debate turns to run")
+    should_stop: Callable[[AgentMessage], bool] | None = Field(
+        None, description="The condition to stop the debate"
+    )
+
     def __init__(
         self,
         card: AgentCard,
@@ -368,6 +459,8 @@ class DebateAgent(BaseAgent):
         self.pick_strategy = pick_strategy
         self.max_turns = max_turns
         self.should_stop = should_stop
+        for agent in self.agents:
+            agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         n = 0
@@ -412,11 +505,36 @@ class DebateAgent(BaseAgent):
 
         self._set_state("idle")
         message.origin = self.card.name
-
+        message.execution_result = "success"
         return message
+
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self,
+            self.agents,
+            "parallel" if self.pick_strategy == "simultaneous" else "sequential",
+        )
 
 
 class VotingAgent(BaseAgent):
+    agents: List[BaseAgent] = Field(
+        ..., description="""The list of agents participate in the voting"""
+    )
+    voting_method: Literal["agent_forest", "llm_score", "majority_vote"] = Field(
+        "agent_forest", description="The voting method to use"
+    )
+    voting_prompt: str | None = Field(
+        None,
+        description="The prompt to use for the voting. This parameter is used when voting_method is 'llm_score' or 'majority_vote'",
+    )
+    get_score_func: Callable[[str], float] = Field(
+        float,
+        description="""The function to use to convert LLM response to score, which is required only when voting_method is 'llm_score'.
+        Note that LLM may generate reponse that could not convert to score.
+        In these cases, there are various ways to handle.
+        For example, we just ignore it and assign the score to 0""",
+    )
+
     def __init__(
         self,
         card: AgentCard,
@@ -431,8 +549,12 @@ class VotingAgent(BaseAgent):
         self.voting_method = voting_method
         self.voting_prompt = voting_prompt
         self.get_score_func = get_score_func
+        if voting_method != "agent_forest":
+            for agent in self.agents:
+                agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        self._set_state("running")
         if message.responses is None:
             message.responses = []
         if self.voting_method == "agent_forest":
@@ -485,6 +607,12 @@ class VotingAgent(BaseAgent):
                 "voting_method must be one of 'agent_forest', 'llm_score', 'majority_vote'"
             )
 
+        self._set_state("idle")
         message.origin = self.card.name
         message.execution_result = "success"
         return message
+
+    def _set_composed_state(self) -> None:
+        self._composed_state = BaseAgent.build_composed_state(
+            self, self.agents, "sequential"
+        )
