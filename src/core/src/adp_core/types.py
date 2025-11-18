@@ -1,6 +1,6 @@
 import abc
 import json
-from typing import Any, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,7 @@ class AgentMessage(BaseModel):
         None, description="The error message if the execution result is error."
     )
 
-    def flatten_dict(self, d: dict, parent_key: str = "", sep="_"):
+    def flatten_dict(self, d: dict, parent_key: str = "", sep="_") -> Dict[str, Any]:
         """
         Flattens a nested dictionary into a single-level dictionary.
 
@@ -55,7 +55,7 @@ class AgentMessage(BaseModel):
                 items.append((new_key, v))
         return dict(items)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """
         Converts the AgentMessage object into a dictionary format.
 
