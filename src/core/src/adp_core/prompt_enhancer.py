@@ -5,6 +5,7 @@ from typing import List
 from pydantic import Field, PrivateAttr
 import tabulate
 import pandas as pd
+# import toon_format
 
 from .types import AgentMessage, BaseChain
 
@@ -67,16 +68,20 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             data (pd.DataFrame): The pandas dataframe to be parsed.
             prettier (str | tabulate.TableFormat | None, optional): The prettier to be used. Defaults to None.
             The available table formats are from the [tabulate](https://pypi.org/project/tabulate/) library.
+            [toon](https://github.com/toon-format/spec) are also supported
 
         Returns:
             self: The instance of the class.
 
         Notes:
+            - If prettier is 'toon', the dataframe is converted to a string following toon specification
             - If prettier is None, the dataframe is converted to a string using the to_string() method.
             - If prettier is not None, the dataframe is converted to a string using the tabulate module with the specified tablefmt.
         """
         if prettier is None:
             self._data = data.to_string()
+        # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
+        #     self._data = toon_format.encode(data.to_dict())
         else:
             self._data = tabulate.tabulate(
                 data.to_dict(), headers="keys", tablefmt=prettier
@@ -107,16 +112,20 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             data (dict): The dictionary to be parsed.
             prettier (str | tabulate.TableFormat | None, optional): The prettier to be used. Defaults to None.
             The available table formats are from the [tabulate](https://pypi.org/project/tabulate/) library.
+            [toon](https://github.com/toon-format/spec) are also supported
 
         Returns:
             self: The instance of the class.
 
         Notes:
+            - If prettier is 'toon', the dataframe is converted to a string following toon specification
             - If prettier is None, the dictionary is converted to a string using the str() method.
             - If prettier is not None, the dictionary is converted to a string using the tabulate module with the specified tablefmt.
         """
         if prettier is None:
             self._data = str(data)
+        # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
+        #     self._data = toon_format.encode(data.to_dict())
         else:
             self._data = tabulate.tabulate(data, headers="keys", tablefmt=prettier)
 
