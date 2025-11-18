@@ -1,6 +1,6 @@
 import abc
 from collections.abc import Callable
-from typing import Optional
+from typing import List, Literal, Optional
 
 from a2a.types import AgentCard
 from pydantic import BaseModel, Field, PrivateAttr
@@ -12,6 +12,7 @@ class BaseAgent(abc.ABC, BaseModel):
     """An interface for agent implementations."""
 
     _state: str = PrivateAttr("idle")
+    _composed_state: str = PrivateAttr("idle")
 
     card: AgentCard = Field(
         ...,
@@ -34,6 +35,7 @@ class BaseAgent(abc.ABC, BaseModel):
         self._state = "idle"
         self.state_change_callback = state_change_callback
         self.card = card
+        self._set_composed_state()
 
     @abc.abstractmethod
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -58,14 +60,70 @@ class BaseAgent(abc.ABC, BaseModel):
         return message
 
     async def aexecute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        """The asynchronous version of method execute."""
         return self.execute(message, **kwargs)
 
     @property
-    def state(self):
+    def state(self) -> str:
         """Get the current state of the agent."""
         return self._state
 
-    def _set_state(self, state: str):
+    @property
+    def composed_state(self) -> str:
+        """Get the current whole state of the agent hierarchy."""
+        return self._composed_state
+
+    def _set_composed_state(self) -> None:
+        self._composed_state = self._state
+
+    def _set_state(self, state: str) -> None:
         self._state = state
+        self._self_composed_state = self._set_composed_state()
         if self.state_change_callback:
             self.state_change_callback(state)
+
+    def _child_state_observer(self, state: str) -> None:
+        self._set_composed_state()
+        if self.state_change_callback:
+            self.state_change_callback(self._composed_state)
+
+    @classmethod
+    def build_composed_state(
+        cls,
+        parent_agent: "BaseAgent",
+        child_agents: List["BaseAgent"],
+        connect_type: Literal["sequential", "parallel"],
+    ) -> str:
+        """
+        Build a composed state string for the given agent and its children.
+        The composition rule is following:
+        - The order of the agent hierarchy is topdown.
+        - A state of a agent is with format: <agent_name>:<agent_state>
+        - The level separator is "/". For example: <parent_agent>:<parent_state>/<child_agent1>:<child_state1>
+        - If a child is made up of multiple agents, there are 2 type of connections which currently support are "sequential" and "parallel".
+            + "sequential": the children are connected with "-" separator and encapsulate with bracket, for example: <parent_agent>:<parent_state>/((<child_agent1>:<child_state1>)-(<child_agent2>:<child_state2>))
+            + "parallel": the children are connected with "|" separator and encapsulate with bracket, for example: <parent_agent>:<parent_state>/((<child_agent1>:<child_state1>)|(<child_agent2>:<child_state2>))
+        - Lower level of hierarchy will be constructed the same way to form a complete tree of agent state.
+
+        Args:
+            parent_agent: The parent agent.
+            child_agents: A list of child agents. This list is a direct child only. The function will use the composed_state of the direct child to form the tree. The composed state of the child is assumed to be already built by the child before.
+            connect_type: The type of connection between the parent and children, either "sequential" or "parallel".
+
+        Returns:
+            str: The composed state string.
+        """
+        self_state = f"{parent_agent.card.name}:{parent_agent.state}"
+        child_states = [child_agent.composed_state for child_agent in child_agents]
+        if len(child_states) == 0:
+            return self_state
+        elif len(child_states) == 1:
+            return f"{self_state}/{child_states[0]}"
+        else:
+            childs = [f"({state})" for state in child_states]
+            if connect_type == "sequential":
+                return f"{self_state}/({'-'.join(childs)})"
+            elif connect_type == "parallel":
+                return f"{self_state}/({'|'.join(childs)})"
+            else:
+                raise ValueError(f"Invalid connect_type: {connect_type}")
