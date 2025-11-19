@@ -10,6 +10,12 @@ class AgentMessage(BaseModel):
         ...,
         description="The prompt consumed by agent's LLM. Note that this is a user prompt",
     )
+    query_media: Optional[List[str]] = Field(
+        None, description="The media content associated with the query."
+    )
+    query_media_type: Optional[List[str]] = Field(
+        None, description="The media type associated with the query."
+    )
     origin: Optional[str] = Field(None, description="The agent that send this message")
     response: Optional[str] = Field(
         None, description="The response from the agent's LLM"
@@ -32,6 +38,13 @@ class AgentMessage(BaseModel):
     )
     error_message: Optional[str] = Field(
         None, description="The error message if the execution result is error."
+    )
+    media: Optional[List[str]] = Field(
+        None,
+        description="The additional media content. Can be image, video, audio, etc.",
+    )
+    media_type: Optional[List[str]] = Field(
+        None, description="The media type associated with the media."
     )
 
     def flatten_dict(self, d: dict, parent_key: str = "", sep="_") -> Dict[str, Any]:
