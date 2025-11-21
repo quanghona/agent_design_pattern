@@ -2,7 +2,7 @@ import abc
 import json
 import os
 from typing import List
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, field_validator
 import tabulate
 import pandas as pd
 # import toon_format
@@ -18,9 +18,6 @@ class BasePromptEnhancer(BaseChain):
     - Structure enhancement: Rewrite / refine the prompt partially or entirely.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__()
-
     @abc.abstractmethod
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return super().__call__(message, **kwargs)
@@ -29,9 +26,6 @@ class BasePromptEnhancer(BaseChain):
 class IdentityPromptEnhancer(BasePromptEnhancer):
     """A prompt enhancer that does nothing.
     This serves as a default prompt enhancer."""
-
-    def __init__(self, **kwargs):
-        super().__init__()
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return message
@@ -49,12 +43,12 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
     )
     _data: str | None = PrivateAttr(None)
 
-    def __init__(self, format: str = "{prompt}\n{data}", **kwargs):
-        super().__init__()
-        if "{prompt}" not in format or "{data}" not in format:
+    @field_validator("format")
+    @classmethod
+    def check_starts_with_prompt_and_data(cls, v: str) -> str:
+        if "{prompt}" not in v or "{data}" not in v:
             raise ValueError("The format must contain at least {prompt} and {data}")
-        self.format = format
-        self._data = None
+        return v
 
     def parse_pandas(
         self,

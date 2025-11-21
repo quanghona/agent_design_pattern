@@ -1,9 +1,9 @@
 import concurrent.futures
 import random
-from typing import Callable, Dict, Generator, List, Literal, Tuple
-from a2a.types import AgentCard
+from typing import Callable, Generator, List, Literal, Optional, Tuple
 
-from pydantic import Field
+from adp_core.types import Response
+from pydantic import Field, field_validator
 from sacrebleu import sentence_bleu
 
 from .agent import AgentMessage, BaseAgent
@@ -36,6 +36,13 @@ class ReflectionAgent(BaseAgent):
         description="""The key of which to store the context (e.g. intermediate result) during generation.
         Note that the key need to start with 'context_'""",
     )
+
+    @field_validator("task_response_key")
+    @classmethod
+    def check_starts_with_prefix(cls, v: str) -> str:
+        if not v.startswith("context_"):
+            raise ValueError("task_response_key must start with 'context_'")
+        return v
 
     def execute(
         self, message: AgentMessage, keep_original_response: bool = True, **kwargs
@@ -95,21 +102,6 @@ class LoopAgent(BaseAgent):
         ...,
         description="The condition to stop the loop. It should be a function that takes an AgentMessage as an argument and returns a boolean.",
     )
-
-    def __init__(
-        self,
-        card: AgentCard,
-        agent: BaseAgent,
-        is_stop: Callable[[AgentMessage], bool] | Generator[bool, None, None],
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.agent = agent
-        self.is_stop = is_stop
-        self.agent.state_change_callback = self._child_state_observer
 
     def execute(
         self,
@@ -189,21 +181,8 @@ class SequentialAgent(BaseAgent):
         ...,
         description="""The list of agents to execute in sequence.
             The order of the sequence is the order of the execution.""",
+        min_length=1,
     )
-
-    def __init__(
-        self,
-        card: AgentCard,
-        agents: List[BaseAgent],
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.agents = agents
-        for agent in self.agents:
-            agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         self.state = "running"
@@ -241,22 +220,8 @@ class ParallelAgent(BaseAgent):
     """
 
     agents: List[BaseAgent] = Field(
-        ..., description="""The list of agents to execute in parallel"""
+        ..., description="""The list of agents to execute in parallel""", min_length=1
     )
-
-    def __init__(
-        self,
-        card: AgentCard,
-        agents: List[BaseAgent],
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.agents = agents
-        for agent in self.agents:
-            agent.state_change_callback = self._child_state_observer
 
     def execute(  # type: ignore
         self, messages: AgentMessage | List[AgentMessage], **kwargs
@@ -332,15 +297,22 @@ class CoordinatorAgent(BaseAgent):
     planner_agent: BaseAgent = Field(
         ..., description="""The agent that will plan the steps to be executed"""
     )
-    workers: Dict[str, BaseAgent] = Field(
+    parse_plan: Callable[
+        [AgentMessage, List[BaseAgent]], List[Tuple[AgentMessage, BaseAgent, List]]
+    ] = Field(
+        ...,
+        description="""The function that will parse the plan and return the list of steps to be executed.""",
+    )
+    workers: List[BaseAgent] = Field(
         ...,
         description="""The list of agents that will execute the steps based on the plan""",
+        min_length=1,
     )
-    summary_chain: BaseLLMChain | None = Field(
+    summary_chain: Optional[BaseLLMChain] = Field(
         None,
         description="""The summary chain that will summarize the results so far and generate final answer""",
     )
-    summary_prompt: str | None = Field(
+    summary_prompt: Optional[str] = Field(
         None, description="""The prompt that will be used by the summary chain"""
     )
     summary_steps_key: str = Field(
@@ -349,44 +321,27 @@ class CoordinatorAgent(BaseAgent):
         Note that the key need to start with 'context_'""",
     )
 
-    def __init__(
-        self,
-        card: AgentCard,
-        planner_agent: BaseAgent,
-        parse_plan: Callable[
-            [str, List[BaseAgent]], List[Tuple[AgentMessage, BaseAgent, List]]
-        ],
-        workers: List[BaseAgent],
-        summary_chain: BaseLLMChain | None = None,
-        summary_prompt: str | None = None,
-        summary_steps_key: str = "context_results",
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.planner_agent = planner_agent
-        self.parse_plan = parse_plan
-        self.workers = {worker.__name__: worker for worker in workers}
-        self.summary_chain = summary_chain
-        self.summary_prompt = summary_prompt
-        if not summary_steps_key.startswith("context_"):
+    @field_validator("summary_steps_key")
+    @classmethod
+    def check_starts_with_prefix(cls, v: str) -> str:
+        if not v.startswith("context_"):
             raise ValueError("summary_steps_key must start with 'context_'")
-        self.summary_steps_key = summary_steps_key.replace("context_", "")
+        return v
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         self.state = "planning"
+        # TODO: abstract structured output
         message = self.planner_agent.execute(message, **kwargs)
 
         if message.execution_result != "success":
             return message
 
-        steps = self.parse_plan(str(message.response), list(self.workers.values()))
+        steps = self.parse_plan(message, self.workers)
         sub_task_result = []
         # TODO: check step dependency and parallelize steps to speed up
+        summary_steps_key = self.summary_steps_key.replace("context_", "")
         for i, (step_msg, step_agent, dependencies) in enumerate(steps):
-            step_msg.context = {self.summary_steps_key: sub_task_result}
+            step_msg.context = {summary_steps_key: sub_task_result}
             self.state = f"step {i}: worker {step_agent.card.name} running"
             sub_task_result.append(step_agent.execute(step_msg, **kwargs))
 
@@ -394,28 +349,39 @@ class CoordinatorAgent(BaseAgent):
             if self.summary_prompt is not None:
                 # Use coordinator as summary agent
                 self.state = f"{self.planner_agent.card.name} finalizing"
-                message.query = self.summary_prompt
-                message.context = {self.summary_steps_key: sub_task_result}
-                message = self.planner_agent.execute(message, **kwargs)
+                summary_message = AgentMessage(
+                    query=self.summary_prompt,
+                    context={summary_steps_key: sub_task_result},
+                    responses=[],
+                )  # type: ignore
+                summary_message = self.planner_agent.execute(summary_message, **kwargs)
+            else:
+                return message
             # if no summary prompt is provided, just return the result from workers
         else:
             self.state = "finalizing"
-            message.context = {self.summary_steps_key: sub_task_result}
-            message = self.summary_chain.invoke(message, **kwargs)
+            summary_message = AgentMessage(
+                query=message.query,
+                context={summary_steps_key: sub_task_result},
+                responses=[],
+            )  # type: ignore
+            summary_message = self.summary_chain.invoke(summary_message, **kwargs)
 
         self.state = "idle"
-        message.origin = self.card.name
-        return message
+        summary_message.origin = self.card.name
+        return summary_message
 
     def _set_composed_state(self) -> None:
         self._composed_state = BaseAgent.build_composed_state(
-            self, [self.planner_agent, *list(self.workers.values())], "sequential"
+            self, [self.planner_agent, *self.workers], "sequential"
         )
 
 
 class DebateAgent(BaseAgent):
     agents: List[BaseAgent] = Field(
-        ..., description="""The list of agents participate in the conversation"""
+        ...,
+        description="""The list of agents participate in the conversation""",
+        min_length=1,
     )
     pick_strategy: (
         Literal["round_robin", "random", "simultaneous"]
@@ -423,31 +389,12 @@ class DebateAgent(BaseAgent):
     ) = Field(
         "round_robin", description="The strategy to pick the agent to run the next turn"
     )
-    max_turns: int = Field(5, description="The maximum number of debate turns to run")
+    max_turns: int = Field(
+        5, description="The maximum number of debate turns to run", ge=1
+    )
     should_stop: Callable[[AgentMessage], bool] | None = Field(
         None, description="The condition to stop the debate"
     )
-
-    def __init__(
-        self,
-        card: AgentCard,
-        agents: List[BaseAgent],
-        pick_strategy: Literal["round_robin", "random", "simultaneous"]
-        | Callable[[List[BaseAgent]], BaseAgent] = "round_robin",
-        max_turns: int = 5,
-        should_stop: Callable[[AgentMessage], bool] | None = None,
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.agents = agents
-        self.pick_strategy = pick_strategy
-        self.max_turns = max_turns
-        self.should_stop = should_stop
-        for agent in self.agents:
-            agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         n = 0
@@ -501,7 +448,9 @@ class DebateAgent(BaseAgent):
 
 class VotingAgent(BaseAgent):
     agents: List[BaseAgent] = Field(
-        ..., description="""The list of agents participate in the voting"""
+        ...,
+        description="""The list of agents participate in the voting""",
+        min_length=1,
     )
     voting_method: Literal["agent_forest", "llm_score", "majority_vote"] = Field(
         "agent_forest", description="The voting method to use"

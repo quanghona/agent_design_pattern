@@ -1,6 +1,8 @@
 import abc
 from typing import Callable, List
 
+from pydantic import Field
+
 from .guardrail import BaseGuardRail, PassGuardRail
 from .prompt_enhancer import (
     BasePromptEnhancer,
@@ -14,13 +16,14 @@ class BaseLLMChain(BaseChain):
     Base class for LLM chains.
     """
 
-    @abc.abstractmethod
-    def generate(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        pass
+    name: str = Field(
+        "chain",
+        description="The name of the chain. Should be same at agent who hold this chain for easy to operate.",
+    )
 
     @abc.abstractmethod
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        return self.generate(message, **kwargs)
+        pass
 
     async def ainvoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return self.invoke(message, **kwargs)
@@ -38,18 +41,22 @@ class TypicalLLMChain(BaseLLMChain):
     - generate: generate the response. This steps should also handle the tool calling procedure and finalize the response
     - output guardrail: validate the output message"""
 
-    def __init__(
-        self,
-        input_guardrail: BaseGuardRail = PassGuardRail(),
-        prompt_enhancer: BasePromptEnhancer = IdentityPromptEnhancer(),
-        tools: List[Callable] = [],
-        output_guardrail: BaseGuardRail = PassGuardRail(),
-    ):
-        super().__init__()
-        self.input_guardrail = input_guardrail
-        self.prompt_enhancer = prompt_enhancer
-        self.tools = tools
-        self.output_guardrail = output_guardrail
+    input_guardrail: BaseGuardRail = Field(
+        default=PassGuardRail(),
+        description="validate the input message",
+    )
+    prompt_enhancer: BasePromptEnhancer = Field(
+        default=IdentityPromptEnhancer(),
+        description="add more context to the prompt or rewrite / refine the prompt",
+    )
+    tools: List[Callable] = Field(
+        default=[],
+        description="tools to call for the LLM",
+    )
+    output_guardrail: BaseGuardRail = Field(
+        default=PassGuardRail(),
+        description="validate the output message",
+    )
 
     @abc.abstractmethod
     def generate(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -67,9 +74,7 @@ class TypicalLLMChain(BaseLLMChain):
 class LLMPromptEnhancer(BasePromptEnhancer):
     """A prompt enhancer that use an LLM chain to rewrite the prompt."""
 
-    def __init__(self, chain: BaseLLMChain, **kwargs):
-        super().__init__()
-        self.chain = chain
+    chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         message = self.chain.invoke(message, **kwargs)
