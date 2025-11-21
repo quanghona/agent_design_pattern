@@ -1,6 +1,6 @@
 import abc
 from collections.abc import Callable
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from a2a.types import AgentCard
 from pydantic import BaseModel, Field, PrivateAttr
@@ -20,22 +20,10 @@ class BaseAgent(abc.ABC, BaseModel):
         A self-describing manifest for an agent.
         It provides essential metadata including the agent's identity, capabilities, skills, supported communication methods, and security requirements.""",
     )
-    state_change_callback: Optional[Callable[[str], None] | None] = Field(
+    state_change_callback: Optional[Callable[[str], None]] = Field(
         default=None,
         description="The callback function to update the state of the agent.",
     )
-
-    def __init__(
-        self,
-        card: AgentCard,
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__()
-        self._state = "idle"
-        self.state_change_callback = state_change_callback
-        self.card = card
-        self._set_composed_state()
 
     @abc.abstractmethod
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -74,18 +62,30 @@ class BaseAgent(abc.ABC, BaseModel):
         return self._composed_state
 
     def _set_composed_state(self) -> None:
-        self._composed_state = self._state
+        self._composed_state = BaseAgent.build_composed_state(self, [], "sequential")
 
-    def _set_state(self, state: str) -> None:
-        self._state = state
-        self._self_composed_state = self._set_composed_state()
-        if self.state_change_callback:
-            self.state_change_callback(state)
-
-    def _child_state_observer(self, state: str) -> None:
+    def _sync_state(self, state: str = "") -> None:
         self._set_composed_state()
         if self.state_change_callback:
             self.state_change_callback(self._composed_state)
+
+    @state.setter
+    def state(self, value: str) -> None:
+        self._state = value
+        self._sync_state()
+
+    def __setattr__(self, name: str, value: Any):
+        if isinstance(value, BaseAgent):
+            value.state_change_callback = self._sync_state
+        elif isinstance(value, List):
+            for agent in value:
+                if isinstance(agent, BaseAgent):
+                    agent.state_change_callback = self._sync_state
+        elif isinstance(value, Dict):
+            for agent in value.values():
+                if isinstance(agent, BaseAgent):
+                    agent.state_change_callback = self._sync_state
+        super().__setattr__(name, value)
 
     @classmethod
     def build_composed_state(

@@ -54,7 +54,7 @@ class ReflectionAgent(BaseAgent):
         self.task_response_key = task_response_key
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        self._set_state("running")
+        self.state = "running"
         message = self.chain_task.invoke(message, **kwargs)
         message.execution_result = message.execution_result or "error"
         if message.execution_result != "success":
@@ -63,14 +63,14 @@ class ReflectionAgent(BaseAgent):
             )
             return message
 
-        self._set_state("reflecting")
+        self.state = "reflecting"
         message.context = {}
         message.context[self.task_response_key.replace("context_", "")] = (
             message.response
         )
         result_message = self.chain_reflection.invoke(message, **kwargs)
 
-        self._set_state("idle")
+        self.state = "idle"
         result_message.origin = self.card.name
         return result_message
 
@@ -129,7 +129,7 @@ class LoopAgent(BaseAgent):
         | Callable[[str, str, List[Tuple[str, str]]], List[Tuple[str, str]]] = 1,
         **kwargs,
     ) -> AgentMessage:
-        self._set_state("running")
+        self.state = "running"
         message.responses = []
 
         def update_responses():
@@ -146,7 +146,7 @@ class LoopAgent(BaseAgent):
         i = 0
         if isinstance(self.is_stop, Callable):
             while self.is_stop(message) is False:
-                self._set_state("running iteration " + str(i))
+                self.state = "running#" + str(i)
                 i += 1
                 message = self.agent.execute(message, **kwargs)
                 if message.execution_result != "success":
@@ -155,7 +155,7 @@ class LoopAgent(BaseAgent):
         elif isinstance(self.is_stop, Generator):
             try:
                 while next(self.is_stop) is False:
-                    self._set_state("running iteration " + str(i))
+                    self.state = "running#" + str(i)
                     i += 1
                     message = self.agent.execute(message, **kwargs)
                     if message.execution_result != "success":
@@ -168,7 +168,7 @@ class LoopAgent(BaseAgent):
                 f"is_stop must be a callable or a generator, received {type(self.is_stop)}"
             )
 
-        self._set_state("idle")
+        self.state = "idle"
         message.origin = self.card.name
         return message
 
@@ -218,16 +218,14 @@ class SequentialAgent(BaseAgent):
             agent.state_change_callback = self._child_state_observer
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        self.state = "running"
         for agent in self.agents:
-            self._set_state("running agent " + agent.card.name)
             message = agent.execute(message, **kwargs)
-
             if message.execution_result != "success":
                 break
 
-        self._set_state("idle")
+        self.state = "idle"
         message.origin = self.card.name
-
         return message
 
     def _set_composed_state(self) -> None:
@@ -283,7 +281,7 @@ class ParallelAgent(BaseAgent):
                 "messages must be a list of AgentMessage with the same length as the number of agents"
             )
 
-        self._set_state("running")
+        self.state = "running"
         # if torch is used, we can use torch.multiprocessing
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [
@@ -303,7 +301,7 @@ class ParallelAgent(BaseAgent):
             ],
             execution_result="success",
         )  # type: ignore
-        self._set_state("idle")
+        self.state = "idle"
         return result_message
 
     def _set_composed_state(self) -> None:
@@ -389,7 +387,7 @@ class CoordinatorAgent(BaseAgent):
         self.summary_steps_key = summary_steps_key.replace("context_", "")
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        self._set_state("planning")
+        self.state = "planning"
         message = self.planner_agent.execute(message, **kwargs)
 
         if message.execution_result != "success":
@@ -400,23 +398,23 @@ class CoordinatorAgent(BaseAgent):
         # TODO: check step dependency and parallelize steps to speed up
         for i, (step_msg, step_agent, dependencies) in enumerate(steps):
             step_msg.context = {self.summary_steps_key: sub_task_result}
-            self._set_state(f"step {i}: worker {step_agent.card.name} running")
+            self.state = f"step {i}: worker {step_agent.card.name} running"
             sub_task_result.append(step_agent.execute(step_msg, **kwargs))
 
         if self.summary_chain is None:
             if self.summary_prompt is not None:
                 # Use coordinator as summary agent
-                self._set_state(f"{self.planner_agent.card.name} finalizing")
+                self.state = f"{self.planner_agent.card.name} finalizing"
                 message.query = self.summary_prompt
                 message.context = {self.summary_steps_key: sub_task_result}
                 message = self.planner_agent.execute(message, **kwargs)
             # if no summary prompt is provided, just return the result from workers
         else:
-            self._set_state("finalizing")
+            self.state = "finalizing"
             message.context = {self.summary_steps_key: sub_task_result}
             message = self.summary_chain.invoke(message, **kwargs)
 
-        self._set_state("idle")
+        self.state = "idle"
         message.origin = self.card.name
         return message
 
@@ -471,7 +469,7 @@ class DebateAgent(BaseAgent):
             if self.pick_strategy == "round_robin":
                 next_turn_agent = self.agents[n % len(self.agents)]
             elif self.pick_strategy == "simultaneous":
-                self._set_state(f"turn {n}: all agents running")
+                self.state = f"turn {n}: all agents running"
                 # TODO: parallelize the execution
                 current_turn_messages = [
                     agent.execute(message, **kwargs) for agent in self.agents
@@ -493,7 +491,7 @@ class DebateAgent(BaseAgent):
                 )
 
             if self.pick_strategy != "simultaneous":
-                self._set_state(f"turn {n}: agent {next_turn_agent.card.name} running")  # type: ignore
+                self.state = f"turn {n}: agent {next_turn_agent.card.name} running"  # type: ignore
                 message = next_turn_agent.execute(message, **kwargs)  # type: ignore
                 message.responses.append((next_turn_agent.card.name, message.response))  # type: ignore
                 n += 1
@@ -503,7 +501,7 @@ class DebateAgent(BaseAgent):
             ):
                 break
 
-        self._set_state("idle")
+        self.state = "idle"
         message.origin = self.card.name
         message.execution_result = "success"
         return message
@@ -535,26 +533,8 @@ class VotingAgent(BaseAgent):
         For example, we just ignore it and assign the score to 0""",
     )
 
-    def __init__(
-        self,
-        card: AgentCard,
-        agents: List[BaseAgent],
-        voting_method: Literal["agent_forest", "llm_score", "majority_vote"],
-        voting_prompt: str | None = None,
-        get_score_func: Callable[[str], float] = float,
-        state_change_callback: Callable[[str], None] | None = None,
-    ):  # approval, cummulative, ranked
-        super().__init__(state_change_callback=state_change_callback, card=card)
-        self.agents = agents
-        self.voting_method = voting_method
-        self.voting_prompt = voting_prompt
-        self.get_score_func = get_score_func
-        if voting_method != "agent_forest":
-            for agent in self.agents:
-                agent.state_change_callback = self._child_state_observer
-
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        self._set_state("running")
+        self.state = "running"
         if message.responses is None:
             message.responses = []
         if self.voting_method == "agent_forest":
@@ -607,7 +587,7 @@ class VotingAgent(BaseAgent):
                 "voting_method must be one of 'agent_forest', 'llm_score', 'majority_vote'"
             )
 
-        self._set_state("idle")
+        self.state = "idle"
         message.origin = self.card.name
         message.execution_result = "success"
         return message
