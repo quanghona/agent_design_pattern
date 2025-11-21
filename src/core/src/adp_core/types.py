@@ -5,10 +5,15 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 
 
+Response = Tuple[str, str]
+
+
 class AgentMessage(BaseModel):
     query: str = Field(
         ...,
-        description="The prompt consumed by agent's LLM. Note that this is a user prompt",
+        description="""The user query consumed by agent's LLM.
+        In this message class, we don't store the system prompt and user template.
+        Because each agent have their own system prompt and user template, which is not shared between agents.""",
     )
     query_media: Optional[List[str]] = Field(
         None, description="The media content associated with the query."
@@ -17,11 +22,8 @@ class AgentMessage(BaseModel):
         None, description="The media type associated with the query."
     )
     origin: Optional[str] = Field(None, description="The agent that send this message")
-    response: Optional[str] = Field(
-        None, description="The response from the agent's LLM"
-    )
-    responses: Optional[List[Tuple[str, str]]] = Field(
-        None,
+    responses: List[Response] = Field(
+        [],
         description="""
         If an agent generate multiple responses, either by same or different subagents, all of them will be stored here.
         In each response tuple, the first one should be agent name or index, and second is the response""",

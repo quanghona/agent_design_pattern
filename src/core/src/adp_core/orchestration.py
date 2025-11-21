@@ -37,23 +37,9 @@ class ReflectionAgent(BaseAgent):
         Note that the key need to start with 'context_'""",
     )
 
-    def __init__(
-        self,
-        card: AgentCard,
-        chain_task: BaseLLMChain,
-        chain_reflection: BaseLLMChain,
-        task_response_key: str = "context_response",
-        state_change_callback: Callable[[str], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(
-            state_change_callback=state_change_callback, card=card, **kwargs
-        )
-        self.chain_task = chain_task
-        self.chain_reflection = chain_reflection
-        self.task_response_key = task_response_key
-
-    def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
+    def execute(
+        self, message: AgentMessage, keep_original_response: bool = True, **kwargs
+    ) -> AgentMessage:
         self.state = "running"
         message = self.chain_task.invoke(message, **kwargs)
         message.execution_result = message.execution_result or "error"
@@ -64,14 +50,17 @@ class ReflectionAgent(BaseAgent):
             return message
 
         self.state = "reflecting"
-        message.context = {}
-        message.context[self.task_response_key.replace("context_", "")] = (
-            message.response
-        )
-        result_message = self.chain_reflection.invoke(message, **kwargs)
-
+        task_response_key = self.task_response_key.replace("context_", "")
+        reflect_message = message.model_copy(deep=True)
+        reflect_message.context = {}
+        _, reflect_message.context[task_response_key] = reflect_message.responses[-1]  # type: ignore
+        reflect_message.responses = []
+        result_message = self.chain_reflection.invoke(reflect_message, **kwargs)
         self.state = "idle"
         result_message.origin = self.card.name
+        if result_message.execution_result == "success" and keep_original_response:
+            result_message.responses.insert(-1, message.responses[-1])  # type: ignore
+
         return result_message
 
 
@@ -125,23 +114,18 @@ class LoopAgent(BaseAgent):
     def execute(
         self,
         message: AgentMessage,
-        keep_result: int
-        | Callable[[str, str, List[Tuple[str, str]]], List[Tuple[str, str]]] = 1,
+        keep_result: int | Callable[[List[Response]], List[Response]] = 1,
         **kwargs,
     ) -> AgentMessage:
         self.state = "running"
-        message.responses = []
+        origin_len = len(message.responses)
+        responses = message.model_copy(deep=True)
 
         def update_responses():
-            if message.responses is None:
-                message.responses = []
-            message.responses.append((self.agent.card.name, message.response or ""))
             if isinstance(keep_result, int) and keep_result > 0:
-                message.responses = message.responses[-keep_result:]
+                responses.responses = responses.responses[-keep_result - origin_len :]
             elif isinstance(keep_result, Callable):
-                message.responses = keep_result(
-                    self.agent.card.name, str(message.response), message.responses
-                )
+                responses.responses = keep_result(responses.responses)
 
         i = 0
         if isinstance(self.is_stop, Callable):
@@ -151,6 +135,8 @@ class LoopAgent(BaseAgent):
                 message = self.agent.execute(message, **kwargs)
                 if message.execution_result != "success":
                     break
+                else:
+                    responses.responses.append(message.responses.pop())
                 update_responses()
         elif isinstance(self.is_stop, Generator):
             try:
@@ -160,6 +146,8 @@ class LoopAgent(BaseAgent):
                     message = self.agent.execute(message, **kwargs)
                     if message.execution_result != "success":
                         break
+                    else:
+                        responses.responses.append(message.responses.pop())
                     update_responses()
             except StopIteration:
                 pass
@@ -169,8 +157,8 @@ class LoopAgent(BaseAgent):
             )
 
         self.state = "idle"
-        message.origin = self.card.name
-        return message
+        responses.origin = self.card.name
+        return responses
 
     def _set_composed_state(self) -> None:
         self._composed_state = BaseAgent.build_composed_state(
@@ -274,8 +262,10 @@ class ParallelAgent(BaseAgent):
         self, messages: AgentMessage | List[AgentMessage], **kwargs
     ) -> AgentMessage:
         # If received a single message, all agents will process the same message
+        is_single_request = False
         if isinstance(messages, AgentMessage):
-            messages = [messages] * len(self.agents)
+            is_single_request = True
+            messages = [messages.model_copy(deep=True)] * len(self.agents)
         elif len(messages) != len(self.agents):
             raise ValueError(
                 "messages must be a list of AgentMessage with the same length as the number of agents"
@@ -288,19 +278,18 @@ class ParallelAgent(BaseAgent):
                 executor.submit(agent.execute, message, **kwargs)
                 for agent, message in zip(self.agents, messages)
             ]
-            messages = [
+            responses = [
                 future.result() for future in concurrent.futures.as_completed(futures)
             ]
 
         result_message = AgentMessage(
             query="",
             origin=self.card.name,
-            responses=[
-                (agent.card.name, message.response)
-                for agent, message in zip(self.agents, messages)
-            ],
+            responses=[message.responses[-1] for message in responses],
             execution_result="success",
         )  # type: ignore
+        if is_single_request:
+            result_message.responses = messages[0].responses + result_message.responses
         self.state = "idle"
         return result_message
 
@@ -462,7 +451,6 @@ class DebateAgent(BaseAgent):
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         n = 0
-        message.responses = []
 
         # All response turns are stored in the message.responses
         while n < self.max_turns:
@@ -472,13 +460,11 @@ class DebateAgent(BaseAgent):
                 self.state = f"turn {n}: all agents running"
                 # TODO: parallelize the execution
                 current_turn_messages = [
-                    agent.execute(message, **kwargs) for agent in self.agents
+                    agent.execute(message.model_copy(deep=True), **kwargs)
+                    for agent in self.agents
                 ]
-                message.responses.extend(  # type: ignore
-                    [
-                        (msg.origin or "", msg.response or "")
-                        for msg in current_turn_messages
-                    ]
+                message.responses.extend(
+                    [msg.responses[-1] for msg in current_turn_messages]
                 )
                 n += len(self.agents)
             elif self.pick_strategy == "random":
@@ -493,7 +479,6 @@ class DebateAgent(BaseAgent):
             if self.pick_strategy != "simultaneous":
                 self.state = f"turn {n}: agent {next_turn_agent.card.name} running"  # type: ignore
                 message = next_turn_agent.execute(message, **kwargs)  # type: ignore
-                message.responses.append((next_turn_agent.card.name, message.response))  # type: ignore
                 n += 1
 
             if message.execution_result != "success" or (
@@ -535,8 +520,6 @@ class VotingAgent(BaseAgent):
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         self.state = "running"
-        if message.responses is None:
-            message.responses = []
         if self.voting_method == "agent_forest":
             # https://arxiv.org/pdf/2402.05120
             scores = {agent.card.name: 0.0 for agent in self.agents}
@@ -551,7 +534,9 @@ class VotingAgent(BaseAgent):
                     ).score
                 scores[agent_name] = total_score
             highest_score_agent = max(scores, key=scores.get)  # type: ignore
-            message.response = message_map[highest_score_agent]
+            message.responses.append(
+                (highest_score_agent, message_map[highest_score_agent])
+            )
 
         elif self.voting_method == "llm_score":
             if self.voting_prompt is None:
@@ -569,7 +554,7 @@ class VotingAgent(BaseAgent):
 
                     score = agent.execute(message, **kwargs)
                     try:
-                        total_score += self.get_score_func(str(score.response))
+                        total_score += self.get_score_func(score.responses[-1][1])
                     except ValueError as e:
                         # unable to parse the score
                         pass
@@ -577,7 +562,9 @@ class VotingAgent(BaseAgent):
                 # The highest or average score will return the same response
                 # Additional note: because of the score, we even can rank all candidate responses and output a leaderboard.
             highest_score_agent = max(scores, key=scores.get)  # type: ignore
-            message.response = message_map[highest_score_agent]
+            message.responses.append(
+                (highest_score_agent, message_map[highest_score_agent])
+            )
 
         elif self.voting_method == "majority_vote":
             raise NotImplementedError

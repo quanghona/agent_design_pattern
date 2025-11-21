@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from a2a.types import AgentCard
 from pydantic import BaseModel, Field, PrivateAttr
 
+from .chain import BaseLLMChain
 from .types import AgentMessage
 
 
@@ -85,6 +86,10 @@ class BaseAgent(abc.ABC, BaseModel):
             for agent in value.values():
                 if isinstance(agent, BaseAgent):
                     agent.state_change_callback = self._sync_state
+        elif isinstance(
+            value, BaseLLMChain
+        ):  # force name of the chain is the same as the agent
+            value.name = self.card.name
         super().__setattr__(name, value)
 
     @classmethod

@@ -73,6 +73,8 @@ class LLMPromptEnhancer(BasePromptEnhancer):
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         message = self.chain.invoke(message, **kwargs)
-        message.query = str(message.response)
-        message.response = None
+        if message.execution_result != "success":
+            return message
+        _, message.query = message.responses[-1]
+        message.responses = []
         return message
