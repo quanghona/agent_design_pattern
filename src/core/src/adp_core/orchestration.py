@@ -2,7 +2,7 @@ import concurrent.futures
 import random
 from typing import Callable, Generator, List, Literal, Optional, Tuple
 
-from adp_core.types import Response
+from adp_core.types import AgentResponse
 from pydantic import Field, field_validator
 from sacrebleu import sentence_bleu
 
@@ -106,7 +106,7 @@ class LoopAgent(BaseAgent):
     def execute(
         self,
         message: AgentMessage,
-        keep_result: int | Callable[[List[Response]], List[Response]] = 1,
+        keep_result: int | Callable[[List[AgentResponse]], List[AgentResponse]] = 1,
         **kwargs,
     ) -> AgentMessage:
         self.state = "running"

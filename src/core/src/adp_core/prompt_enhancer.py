@@ -142,7 +142,7 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         self.data = "\n".join([f"{bullet_char} {d}" for d in data])
         return self
 
-    def parse_jsonl(self, path: str):
+    def parse_jsonl(self, path: str | os.PathLike[str]):
         """
         Parse a JSONL file into a format that can be used by the prompt enhancer.
 

@@ -1,11 +1,13 @@
 import abc
 import json
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypeVar
 
 from pydantic import BaseModel, Field
 
 
-Response = Tuple[str, str]
+ChainMessage = TypeVar("ChainMessage")
+ChainResponse = TypeVar("ChainResponse")
+AgentResponse = Tuple[str, str]
 
 
 class AgentMessage(BaseModel):
@@ -22,7 +24,7 @@ class AgentMessage(BaseModel):
         None, description="The media type associated with the query."
     )
     origin: Optional[str] = Field(None, description="The agent that send this message")
-    responses: List[Response] = Field(
+    responses: List[AgentResponse] = Field(
         [],
         description="""
         If an agent generate multiple responses, either by same or different subagents, all of them will be stored here.

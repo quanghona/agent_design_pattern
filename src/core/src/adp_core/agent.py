@@ -63,6 +63,7 @@ class BaseAgent(abc.ABC, BaseModel):
         return self._composed_state
 
     def _set_composed_state(self) -> None:
+        # A subchild class that have child agent in their implementation may need to override this
         self._composed_state = BaseAgent.build_composed_state(self, [], "sequential")
 
     def _sync_state(self, state: str = "") -> None:

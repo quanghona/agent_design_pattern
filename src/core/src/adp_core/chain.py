@@ -1,5 +1,6 @@
 import abc
-from typing import Callable, List
+from collections.abc import Sequence
+from typing import Callable, Generic, List, Tuple
 
 from pydantic import Field
 
@@ -8,7 +9,7 @@ from .prompt_enhancer import (
     BasePromptEnhancer,
     IdentityPromptEnhancer,
 )
-from .types import AgentMessage, BaseChain
+from .types import AgentMessage, BaseChain, ChainMessage, ChainResponse
 
 
 class BaseLLMChain(BaseChain):
@@ -32,6 +33,43 @@ class BaseLLMChain(BaseChain):
         return self.invoke(message, **kwargs)
 
 
+class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
+    @abc.abstractmethod
+    def _prepare_conversation(self, message: AgentMessage) -> List[ChainMessage]:
+        pass
+
+    @abc.abstractmethod
+    def _generate_response(
+        self, message: AgentMessage, conversation: List[ChainMessage], **kwargs
+    ) -> Tuple[AgentMessage, ChainResponse, bool]:
+        pass
+
+    @abc.abstractmethod
+    def _process_tools(
+        self,
+        message: AgentMessage,
+        conversation: List[ChainMessage],
+        response: ChainResponse,
+    ) -> Tuple[AgentMessage, List[ChainMessage]]:
+        pass
+
+    def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        # Template method
+        conversation = self._prepare_conversation(message)
+        message, response, has_tool = self._generate_response(
+            message, conversation, **kwargs
+        )
+        if has_tool:
+            message, conversation = self._process_tools(message, conversation, response)
+            message, response, _ = self._generate_response(
+                message, conversation, **kwargs
+            )
+
+        message.origin = self.name
+        message.execution_result = "success"
+        return message
+
+
 class TypicalLLMChain(BaseLLMChain):
     """
     A LLM chain that consists of all components in a typical response generation.
@@ -49,7 +87,7 @@ class TypicalLLMChain(BaseLLMChain):
         default=IdentityPromptEnhancer(),
         description="add more context to the prompt or rewrite / refine the prompt",
     )
-    tools: List[Callable] = Field(
+    tools: Sequence[Callable] = Field(
         default=[],
         description="tools to call for the LLM",
     )
