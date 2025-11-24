@@ -1,5 +1,5 @@
 import abc
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Dict, List, Literal, Optional
 
 from a2a.types import AgentCard
@@ -97,7 +97,7 @@ class BaseAgent(abc.ABC, BaseModel):
     def build_composed_state(
         cls,
         parent_agent: "BaseAgent",
-        child_agents: List["BaseAgent"],
+        child_agents: Sequence["BaseAgent"],
         connect_type: Literal["sequential", "parallel"],
     ) -> str:
         """
