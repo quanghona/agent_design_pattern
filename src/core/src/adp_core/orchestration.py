@@ -392,6 +392,8 @@ class DebateAgent(BaseAgent):
         Literal["round_robin", "random", "simultaneous"]
         | Callable[[Sequence[BaseAgent]], BaseAgent]
     ) = Field(..., description="The strategy to pick the agent to run the next turn")
+    random_seed: Optional[int] = Field(
+        None, description="The random seed for the 'random' pick strategy"
     )
     max_turns: int = Field(
         5, description="The maximum number of debate turns to run", ge=1
@@ -402,6 +404,8 @@ class DebateAgent(BaseAgent):
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         n = 0
+        if self.pick_strategy == "random" and self.random_seed is not None:
+            random.seed(self.random_seed)
 
         # All response turns are stored in the message.responses
         while n < self.max_turns:
