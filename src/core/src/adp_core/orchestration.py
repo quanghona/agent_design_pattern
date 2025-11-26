@@ -1,8 +1,8 @@
 import concurrent.futures
 import random
 import re
-from collections.abc import Sequence
-from typing import Callable, Generator, List, Literal, Optional, Tuple
+from collections.abc import Generator, Iterator, Sequence
+from typing import Callable, List, Literal, Tuple
 
 from pydantic import Field, field_validator
 from rouge_score import rouge_scorer
@@ -36,7 +36,7 @@ class ReflectionAgent(BaseAgent):
         description="LLM chain that perform reflection on the result of the main task",
     )
     task_response_key: str = Field(
-        "context_response",
+        default="context_response",
         description="""The key of which to store the context (e.g. intermediate result) during generation.
         Note that the key need to start with 'context_'""",
     )
@@ -102,7 +102,7 @@ class LoopAgent(BaseAgent):
     """
 
     agent: BaseAgent = Field(..., description="The agent to loop.")
-    is_stop: Callable[[AgentMessage], bool] | Generator[bool, None, None] = Field(
+    is_stop: Callable[[AgentMessage], bool] | Generator[bool] = Field(
         ...,
         description="The condition to stop the loop. It should be a function that takes an AgentMessage as an argument and returns a boolean.",
     )
@@ -134,7 +134,7 @@ class LoopAgent(BaseAgent):
                 else:
                     responses.responses.append(message.responses.pop())
                 update_responses()
-        elif isinstance(self.is_stop, Generator):
+        elif isinstance(self.is_stop, Iterator):
             try:
                 while next(self.is_stop) is False:
                     self.state = "running#" + str(i)
@@ -149,7 +149,7 @@ class LoopAgent(BaseAgent):
                 pass
         else:
             raise TypeError(
-                f"is_stop must be a callable or a generator, received {type(self.is_stop)}"
+                f"is_stop must be a callable or a Generator, received {type(self.is_stop)}"
             )
 
         self.state = "idle"
@@ -313,12 +313,13 @@ class CoordinatorAgent(BaseAgent):
         description="""The list of agents that will execute the steps based on the plan""",
         min_length=1,
     )
-    summary_chain: Optional[BaseLLMChain] = Field(
-        None,
+    summary_chain: BaseLLMChain | None = Field(
+        default=None,
         description="""The summary chain that will summarize the results so far and generate final answer""",
     )
-    summary_prompt: Optional[str] = Field(
-        None, description="""The prompt that will be used by the summary chain"""
+    summary_prompt: str | None = Field(
+        default=None,
+        description="""The prompt that will be used by the summary chain""",
     )
     summary_steps_key: str = Field(
         "context_results",
@@ -402,14 +403,14 @@ class DebateAgent(BaseAgent):
         Literal["round_robin", "random", "simultaneous"]
         | Callable[[Sequence[BaseAgent]], BaseAgent]
     ) = Field(..., description="The strategy to pick the agent to run the next turn")
-    random_seed: Optional[int] = Field(
-        None, description="The random seed for the 'random' pick strategy"
+    random_seed: int | None = Field(
+        default=None, description="The random seed for the 'random' pick strategy"
     )
     max_turns: int = Field(
         5, description="The maximum number of debate turns to run", ge=1
     )
     should_stop: Callable[[AgentMessage], bool] | None = Field(
-        None, description="The condition to stop the debate"
+        default=None, description="The condition to stop the debate"
     )
 
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -503,7 +504,7 @@ class VotingAgent(BaseAgent):
             - 'rougeN': N can be an integer, e.g. rouge1, rouge2,...""",
     )
     voting_prompt: str | None = Field(
-        None,
+        default=None,
         description="The prompt to use for the voting. This parameter is used when voting_method is 'llm_score'",
     )
 

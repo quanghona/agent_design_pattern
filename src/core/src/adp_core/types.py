@@ -1,6 +1,6 @@
 import abc
 import json
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypeVar
+from typing import Any, Dict, List, Literal, Tuple, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -17,38 +17,41 @@ class AgentMessage(BaseModel):
         In this message class, we don't store the system prompt and user template.
         Because each agent have their own system prompt and user template, which is not shared between agents.""",
     )
-    query_media: Optional[List[str]] = Field(
-        None, description="The media content associated with the query."
+    query_media: List[str] | None = Field(
+        default=None, description="The media content associated with the query."
     )
-    query_media_type: Optional[List[str]] = Field(
-        None, description="The media type associated with the query."
+    query_media_type: List[str] | None = Field(
+        default=None, description="The media type associated with the query."
     )
-    origin: Optional[str] = Field(None, description="The agent that send this message")
+    origin: str | None = Field(
+        default=None, description="The agent that send this message"
+    )
     responses: List[AgentResponse] = Field(
-        [],
+        default=[],
         description="""
         If an agent generate multiple responses, either by same or different subagents, all of them will be stored here.
         In each response tuple, the first one should be agent name or index, and second is the response""",
     )
-    context: Optional[dict] = Field(
-        None,
+    context: dict | None = Field(
+        default=None,
         description="""
         Agent additional material, which probably is the output of other agent or user entered.
         There are various types of context produced by user and other agents.
         The prompt that comsume this context need to explicitly know the format of this context.""",
     )
-    execution_result: Optional[Literal["success", "error"]] = Field(
-        None, description="The execution result of the agent. Can be success or error"
+    execution_result: Literal["success", "error"] | None = Field(
+        default=None,
+        description="The execution result of the agent. Can be success or error",
     )
-    error_message: Optional[str] = Field(
-        None, description="The error message if the execution result is error."
+    error_message: str | None = Field(
+        default=None, description="The error message if the execution result is error."
     )
-    media: Optional[List[str]] = Field(
-        None,
+    media: List[str] | None = Field(
+        default=None,
         description="The additional media content. Can be image, video, audio, etc.",
     )
-    media_type: Optional[List[str]] = Field(
-        None, description="The media type associated with the media."
+    media_type: List[str] | None = Field(
+        default=None, description="The media type associated with the media."
     )
 
     def flatten_dict(self, d: dict, parent_key: str = "", sep="_") -> Dict[str, Any]:

@@ -1,6 +1,6 @@
 import abc
 from collections.abc import Sequence
-from typing import Callable, Generic, List, Optional, Tuple
+from typing import Callable, Generic, List, Tuple
 
 from pydantic import Field, PrivateAttr
 
@@ -34,7 +34,7 @@ class BaseLLMChain(BaseChain):
 
 
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
-    _last_response_as_context: Optional[str] = PrivateAttr(default=None)
+    _last_response_as_context: str | None = PrivateAttr(default=None)
 
     def response_as_context(self, key: str):
         self._last_response_as_context = key.replace("context_", "")

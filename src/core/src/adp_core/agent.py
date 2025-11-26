@@ -1,6 +1,6 @@
 import abc
 from collections.abc import Callable, Sequence
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Literal
 
 from a2a.types import AgentCard
 from pydantic import BaseModel, Field, PrivateAttr
@@ -21,7 +21,7 @@ class BaseAgent(abc.ABC, BaseModel):
         A self-describing manifest for an agent.
         It provides essential metadata including the agent's identity, capabilities, skills, supported communication methods, and security requirements.""",
     )
-    state_change_callback: Optional[Callable[[str], None]] = Field(
+    state_change_callback: Callable[[str], None] | None = Field(
         default=None,
         description="The callback function to update the state of the agent.",
     )
