@@ -231,9 +231,7 @@ class ParallelAgent(BaseAgent):
         self, messages: AgentMessage | Sequence[AgentMessage], **kwargs
     ) -> AgentMessage:
         # If received a single message, all agents will process the same message
-        is_single_request = False
         if isinstance(messages, AgentMessage):
-            is_single_request = True
             messages = [messages.model_copy(deep=True)] * len(self.agents)
         elif len(messages) != len(self.agents):
             raise ValueError(
@@ -257,8 +255,6 @@ class ParallelAgent(BaseAgent):
             responses=[message.responses[-1] for message in responses],
             execution_result="success",
         )  # type: ignore
-        if is_single_request:
-            result_message.responses = messages[0].responses + result_message.responses
         self.state = "idle"
         return result_message
 
