@@ -1,8 +1,8 @@
 import abc
 from collections.abc import Sequence
-from typing import Callable, Generic, List, Tuple
+from typing import Callable, Generic, List, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from .guardrail import BaseGuardRail, PassGuardRail
 from .prompt_enhancer import (
@@ -34,6 +34,11 @@ class BaseLLMChain(BaseChain):
 
 
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
+    _last_response_as_context: Optional[str] = PrivateAttr(default=None)
+
+    def response_as_context(self, key: str):
+        self._last_response_as_context = key.replace("context_", "")
+
     @abc.abstractmethod
     def _prepare_conversation(self, message: AgentMessage) -> List[ChainMessage]:
         pass
@@ -63,6 +68,13 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
             message, conversation = self._process_tools(message, conversation, response)
             message, response, _ = self._generate_response(
                 message, conversation, **kwargs
+            )
+
+        if self._last_response_as_context is not None:
+            if message.context is None:
+                message.context = {}
+            message.context[self._last_response_as_context] = str(
+                message.responses[-1][1]
             )
 
         message.origin = self.name
