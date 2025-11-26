@@ -51,45 +51,37 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
             SystemMessage(self._system_prompt),
             HumanMessage(self._user_prompt_template.format(**message.to_dict())),
         ]
-        if message.responses is not None and len(message.responses) > 0:
-            for previous_response in message.responses:
-                if previous_response[0] == "user":
-                    conversation.append(HumanMessage(previous_response[1]))
-                elif previous_response[0] == "tool":
-                    conversation.append(ToolMessage(previous_response[1]))
-                elif (
-                    previous_response[0] == "system"
-                ):  # this shouldn't happen but just in case
-                    conversation.append(SystemMessage(previous_response[1]))
-                else:
-                    conversation.append(AIMessage(previous_response[1]))
+        total_turns = min(len(message.responses), self.include_history)
+        responses = message.responses[-total_turns:]
+        for response in responses:
+            if response[0] == "user":
+                conversation.append(HumanMessage(response[1]))
+            elif response[0] == "tool":
+                conversation.append(ToolMessage(response[1]))
+            elif response[0] == "system":
+                # this shouldn't happen but just in case
+                conversation.append(SystemMessage(response[1]))
+            else:
+                conversation.append(AIMessage(response[1]))
         return conversation
 
     def _generate_response(
-        self, message: AgentMessage, conversation: List[BaseMessage], **kwargs
-    ) -> Tuple[AgentMessage, AIMessage, bool]:
+        self, conversation: List[BaseMessage], **kwargs
+    ) -> Tuple[List[BaseMessage], AIMessage, bool]:
         response = self._model.invoke(conversation, **kwargs)
         response.content = utils.remove_thinking(str(response.content))
-        message.responses.append((self.name, response.content))
-        return message, response, len(response.tool_calls) > 0
+        conversation.append(response)
+        return conversation, response, len(response.tool_calls) > 0
 
     def _process_tools(
         self,
-        message: AgentMessage,
         conversation: List[BaseMessage],
         response: AIMessage,
-    ) -> Tuple[AgentMessage, List[BaseMessage]]:
-        conversation.append(AIMessage(utils.remove_thinking(str(response.content))))
+    ) -> List[BaseMessage]:
         for tool_call in response.tool_calls:
             if tool_call["name"] not in self._tool_dict:
                 res = tool_call["name"] + " does not exist"
-                conversation.append(
-                    ToolMessage(
-                        res,
-                        tool_call_id=tool_call["id"],
-                    )
-                )
-                message.responses.append(("tool", res))
+                conversation.append(ToolMessage(res, tool_call_id=tool_call["id"]))
             else:
                 try:
                     tool_func = self._tool_dict[tool_call["name"]]
@@ -104,14 +96,35 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
                     conversation.append(
                         ToolMessage(str(tool_response), tool_call_id=tool_call["id"])
                     )
-                    message.responses.append(("tool", str(tool_response)))
                 except Exception as e:
                     res = (
                         f"Encounter error while executing tool {tool_call['name']}. {e}"
                     )
                     conversation.append(ToolMessage(res, tool_call_id=tool_call["id"]))
-                    message.responses.append(("tool", res))
-        return message, conversation
+        return conversation
+
+    def _append_responses(
+        self, message: AgentMessage, conversation: List[BaseMessage]
+    ) -> AgentMessage:
+        start_index = (
+            min(len(message.responses), self.include_history) + 2
+            if self.store_immediate_steps
+            else len(conversation) - 1
+        )  # 2 is system message and user query
+        end_index = len(conversation)
+        name_map = {
+            "ai": self.name,
+            "human": "user",
+            "tool": "tool",
+            "system": "system",
+        }
+        message.responses.extend(
+            [
+                (name_map[conversation[i].type], str(conversation[i].content))
+                for i in range(start_index, end_index)
+            ]
+        )
+        return message
 
     def bind_tools(
         self, tools: Sequence[Callable | BaseTool], tool_choice: str | None = None

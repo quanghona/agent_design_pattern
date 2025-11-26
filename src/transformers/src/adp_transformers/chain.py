@@ -68,25 +68,24 @@ class ChatCausalMultiTurnsChain(
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        if message.responses is None:
-            message.responses = []
-        for msg in message.responses:
-            if msg[0] == "user":
-                conversation.append({"role": "user", "content": msg[1]})
-            elif msg[0] == "tool":
-                conversation.append({"role": "tool", "content": msg[1]})
-            elif msg[0] == "system":  # this shouldn't happen but just in case
-                conversation.append({"role": "system", "content": msg[1]})
+        total_turns = min(len(message.responses), self.include_history)
+        responses = message.responses[-total_turns:]
+        for response in responses:
+            if response[0] == "user":
+                conversation.append({"role": "user", "content": response[1]})
+            elif response[0] == "tool":
+                conversation.append({"role": "tool", "content": response[1]})
+            elif response[0] == "system":  # this shouldn't happen but just in case
+                conversation.append({"role": "system", "content": response[1]})
             else:
-                conversation.append({"role": "assistant", "content": msg[1]})
+                conversation.append({"role": "assistant", "content": response[1]})
         return conversation
 
     def _generate_response(
         self,
-        message: AgentMessage,
         conversation: List[TransformersChainMessage],
         **kwargs,
-    ) -> Tuple[AgentMessage, str, bool]:
+    ) -> Tuple[List[TransformersChainMessage], str, bool]:
         inputs = self._tokenizer.apply_chat_template(
             conversation,
             tools=self.tools,
@@ -99,16 +98,14 @@ class ChatCausalMultiTurnsChain(
             output[:, inputs.input_ids.shape[-1] :], skip_special_tokens=True
         )[0]
         output = utils.remove_thinking(output)
-        message.responses.append((self.name, output))
-        return message, output, "<tool_call>" in output
+        conversation.append({"role": "assistant", "content": output})
+        return conversation, output, "<tool_call>" in output
 
     def _process_tools(
         self,
-        message: AgentMessage,
         conversation: List[TransformersChainMessage],
         response: str,
-    ) -> Tuple[AgentMessage, List[TransformersChainMessage]]:
-        conversation.append({"role": "assistant", "content": response})
+    ) -> List[TransformersChainMessage]:
         tool_calls = ChatCausalMultiTurnsChain.extract_json(response)
 
         for tool_call in tool_calls:
@@ -116,21 +113,41 @@ class ChatCausalMultiTurnsChain(
             if tool_json["name"] not in self._tool_dict:
                 res = f"Tool {tool_json['name']} does not exist"
                 conversation.append({"role": "tool", "content": res})
-                message.responses.append(("tool", res))
             else:
                 try:
                     tool_result = self._tool_dict[tool_json["name"]](
                         **tool_json["arguments"]
                     )
                     conversation.append({"role": "tool", "content": str(tool_result)})
-                    message.responses.append(("tool", str(tool_result)))
                 except Exception as e:
                     res = (
                         f"Encountered error while calling tool {tool_json['name']}. {e}"
                     )
                     conversation.append({"role": "tool", "content": res})
-                    message.responses.append(("tool", res))
-        return message, conversation
+        return conversation
+
+    def _append_responses(
+        self, message: AgentMessage, conversation: List[TransformersChainMessage]
+    ) -> AgentMessage:
+        start_index = (
+            min(len(message.responses), self.include_history) + 2
+            if self.store_immediate_steps
+            else len(conversation) - 1
+        )  # 2 is system message and user query
+        end_index = len(conversation)
+        name_map = {
+            "assistant": self.name,
+            "user": "user",
+            "tool": "tool",
+            "system": "system",
+        }
+        message.responses.extend(
+            [
+                (name_map[conversation[i]["role"]], conversation[i]["content"])
+                for i in range(start_index, end_index)
+            ]
+        )
+        return message
 
     @property
     def tools(self) -> List[Callable]:

@@ -35,8 +35,14 @@ class BaseLLMChain(BaseChain):
 
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
     _last_response_as_context: str | None = PrivateAttr(default=None)
+    include_history: int = Field(
+        default=0, description="number of history message turns to include", ge=0
+    )
+    store_immediate_steps: bool = Field(
+        default=False, description="store intermediate steps output"
+    )
 
-    def response_as_context(self, key: str):
+    def final_response_as_context(self, key: str) -> None:
         self._last_response_as_context = key.replace("context_", "")
 
     @abc.abstractmethod
@@ -45,37 +51,40 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
 
     @abc.abstractmethod
     def _generate_response(
-        self, message: AgentMessage, conversation: List[ChainMessage], **kwargs
-    ) -> Tuple[AgentMessage, ChainResponse, bool]:
+        self, conversation: List[ChainMessage], **kwargs
+    ) -> Tuple[List[ChainMessage], ChainResponse, bool]:
         pass
 
     @abc.abstractmethod
     def _process_tools(
         self,
-        message: AgentMessage,
         conversation: List[ChainMessage],
         response: ChainResponse,
-    ) -> Tuple[AgentMessage, List[ChainMessage]]:
+    ) -> List[ChainMessage]:
+        pass
+
+    @abc.abstractmethod
+    def _append_responses(
+        self, message: AgentMessage, conversation: List[ChainMessage]
+    ) -> AgentMessage:
         pass
 
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
         # Template method
         conversation = self._prepare_conversation(message)
-        message, response, has_tool = self._generate_response(
-            message, conversation, **kwargs
+        conversation, response, has_tool = self._generate_response(
+            conversation, **kwargs
         )
         if has_tool:
-            message, conversation = self._process_tools(message, conversation, response)
-            message, response, _ = self._generate_response(
-                message, conversation, **kwargs
-            )
+            conversation = self._process_tools(conversation, response)
+            conversation, _, _ = self._generate_response(conversation, **kwargs)
+
+        message = self._append_responses(message, conversation)
 
         if self._last_response_as_context is not None:
             if message.context is None:
                 message.context = {}
-            message.context[self._last_response_as_context] = str(
-                message.responses[-1][1]
-            )
+            message.context[self._last_response_as_context] = message.responses.pop()[1]
 
         message.origin = self.name
         message.execution_result = "success"
