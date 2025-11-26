@@ -383,6 +383,16 @@ class CoordinatorAgent(BaseAgent):
 
 
 class DebateAgent(BaseAgent):
+    """
+    Multiple agents participate in a discussion to solve a problem.
+    The DebateAgent is designed to facilitate a discussion between multiple agents.
+    It acts like a conversation manager who will decide the conversation flow
+
+    Note that for the expandability, this agent is reponsible only for expanding the discussing topic, not the summary one.
+    For the complete flow that performs topic rollout and finalize the solution, it is necessary to combine with other agent.
+    There are several ways to achieve this: either by define a new agent that coodinate the actions or chain multiple agents together.
+    """
+
     agents: Sequence[BaseAgent] = Field(
         ...,
         description="""The list of agents participate in the conversation""",

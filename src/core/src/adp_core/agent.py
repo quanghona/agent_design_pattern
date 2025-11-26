@@ -26,6 +26,12 @@ class BaseAgent(abc.ABC, BaseModel):
         description="The callback function to update the state of the agent.",
     )
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._set_composed_state()
+        for _, value in self:
+            self.__value_deco(value)
+
     @abc.abstractmethod
     def execute(self, message: AgentMessage, **kwargs) -> AgentMessage:
         """The execution logic of the agent.
@@ -76,21 +82,30 @@ class BaseAgent(abc.ABC, BaseModel):
         self._state = value
         self._sync_state()
 
-    def __setattr__(self, name: str, value: Any):
-        if isinstance(value, BaseAgent):
+    def __value_deco(self, value: Any):
+        if isinstance(value, str):
+            pass
+        elif isinstance(value, BaseAgent):
             value.state_change_callback = self._sync_state
-        elif isinstance(value, List):
-            for agent in value:
-                if isinstance(agent, BaseAgent):
-                    agent.state_change_callback = self._sync_state
-        elif isinstance(value, Dict):
-            for agent in value.values():
-                if isinstance(agent, BaseAgent):
-                    agent.state_change_callback = self._sync_state
         elif isinstance(
             value, BaseLLMChain
         ):  # force name of the chain is the same as the agent
             value.name = self.card.name
+        elif isinstance(value, Sequence):
+            for agent in value:
+                if isinstance(agent, BaseAgent):
+                    agent.state_change_callback = self._sync_state
+                elif isinstance(value, BaseLLMChain):
+                    value.name = self.card.name
+        elif isinstance(value, Dict):
+            for agent in value.values():
+                if isinstance(agent, BaseAgent):
+                    agent.state_change_callback = self._sync_state
+                elif isinstance(value, BaseLLMChain):
+                    value.name = self.card.name
+
+    def __setattr__(self, name: str, value: Any):
+        self.__value_deco(value)
         super().__setattr__(name, value)
 
     @classmethod

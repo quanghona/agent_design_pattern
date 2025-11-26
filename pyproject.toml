@@ -9,7 +9,6 @@ dependencies = []
 
 [tool.uv.workspace]
 members = [
-    "example",
     "src/core",
     "src/langchain",
     "src/llamaindex",

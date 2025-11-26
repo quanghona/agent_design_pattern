@@ -11,6 +11,7 @@ requires-python = ">=3.10.12"
 dependencies = [
     "a2a-sdk>=0.3.12",
     "pandas>=2.0.0",
+    "rouge-score>=0.1.2",
     "sacrebleu>=2.5.1",
 ]
 
