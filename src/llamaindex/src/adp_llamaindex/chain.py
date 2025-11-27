@@ -1,12 +1,13 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Dict, List, Tuple
 
 from adp_core import utils
 from adp_core.agent import AgentMessage
 from adp_core.chain import BaseCausalMultiTurnsChain
-from llama_index.core.base.llms.types import MessageRole
+from llama_index.core.base.llms.types import MessageRole, TextBlock
 from llama_index.core.llms import ChatMessage, ChatResponse
 from llama_index.core.llms.function_calling import FunctionCallingLLM
+from llama_index.core.tools import FunctionTool
 from llama_index.core.tools.types import BaseTool
 from pydantic import Field, PrivateAttr
 
@@ -20,7 +21,7 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
 
     _tool_dict: Dict[str, BaseTool] = PrivateAttr({})
 
-    def __init__(self, tools: Sequence[BaseTool] = [], **kwargs):
+    def __init__(self, tools: Sequence[BaseTool | Callable] = [], **kwargs):
         super().__init__(**kwargs)
         self.tools = tools
 
@@ -60,16 +61,19 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
     def _generate_response(
         self, conversation: List[ChatMessage], **kwargs
     ) -> Tuple[List[ChatMessage], ChatResponse, bool]:
-        response = self.model.chat(conversation, tools=self.tools, **kwargs)
-        response.message.content = utils.remove_thinking(str(response.message.content))
-        conversation.append(
-            ChatMessage(role=MessageRole.ASSISTANT, content=response.message.content)
+        response = self.model.chat_with_tools(
+            user_msg=conversation[-1],
+            chat_history=conversation[:-1],
+            tools=self.tools,
+            **kwargs,
         )
-        has_tool = bool(
-            self.model.get_tool_calls_from_response(
-                response, error_on_no_tool_call=False
-            )
-        )
+        has_tool = False
+        for block in response.message.blocks:
+            if block.block_type == "text" and len(block.text) > 0:
+                block.text = utils.remove_thinking(block.text)
+            elif block.block_type == "tool_call":
+                has_tool = True
+        conversation.append(response.message)
         return conversation, response, has_tool
 
     def _process_tools(
@@ -136,12 +140,15 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
             MessageRole.TOOL: "tool",
             MessageRole.SYSTEM: "system",
         }
-        message.responses.extend(
-            [
-                (name_map[conversation[i].role], str(conversation[i].content))
-                for i in range(start_index, end_index)
-            ]
-        )
+        for i in range(start_index, end_index):
+            if len(conversation[i].blocks) == 1 and isinstance(
+                conversation[i].blocks[0], TextBlock
+            ):
+                message.responses.append(
+                    (name_map[conversation[i].role], conversation[i].blocks[0].text)  # type: ignore
+                )
+            # TODO: handle other modals later
+
         return message
 
     @property
@@ -149,5 +156,7 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
         return list(self._tool_dict.values())
 
     @tools.setter
-    def tools(self, tools: Sequence[BaseTool]):
-        self._tool_dict = {tool.metadata.get_name(): tool for tool in tools}
+    def tools(self, tools: Sequence[BaseTool | Callable]):
+        if len(tools) > 0 and isinstance(tools[0], Callable):
+            tools = [FunctionTool.from_defaults(tool) for tool in tools]
+        self._tool_dict = {tool.metadata.get_name(): tool for tool in tools}  # type: ignore

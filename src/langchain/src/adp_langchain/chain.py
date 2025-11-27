@@ -12,7 +12,6 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
@@ -23,7 +22,6 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
     _model: BaseChatModel = PrivateAttr()
     _system_prompt: str = PrivateAttr()
     _user_prompt_template: str = PrivateAttr()
-    _prompt: ChatPromptTemplate = PrivateAttr()
     _tool_dict: Dict[str, Callable | BaseTool] = PrivateAttr({})
     _tool_choice: str | None = PrivateAttr()
     _chain = PrivateAttr()
@@ -41,9 +39,6 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
         self._model = model
         self._system_prompt = system_prompt
         self._user_prompt_template = user_prompt_template
-        self._prompt = ChatPromptTemplate(
-            [("system", system_prompt), ("human", user_prompt_template)]
-        )
         self.bind_tools(tools, tool_choice=tool_choice)
 
     def _prepare_conversation(self, message: AgentMessage) -> List[BaseMessage]:
@@ -72,8 +67,9 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
     def _generate_response(
         self, conversation: List[BaseMessage], **kwargs
     ) -> Tuple[List[BaseMessage], AIMessage, bool]:
-        response = self._model.invoke(conversation, **kwargs)
-        response.content = utils.remove_thinking(str(response.content))
+        response = self._chain.invoke(conversation, **kwargs)
+        if len(response.content) > 0 and isinstance(response.content, str):
+            response.content = utils.remove_thinking(str(response.content))
         conversation.append(response)
         return conversation, response, len(response.tool_calls) > 0
 
@@ -122,12 +118,15 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
             "tool": "tool",
             "system": "system",
         }
-        message.responses.extend(
-            [
-                (name_map[conversation[i].type], str(conversation[i].content))
-                for i in range(start_index, end_index)
-            ]
-        )
+        for i in range(start_index, end_index):
+            if (
+                isinstance(conversation[i].content, str)
+                and len(conversation[i].content) > 0
+            ):
+                message.responses.append(
+                    (name_map[conversation[i].type], conversation[i].content)
+                )
+            # TODO: handle other modals later
         return message
 
     def bind_tools(
@@ -147,10 +146,13 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
         if len(tools) > 0:
             model_with_tools = self._model.bind_tools(tools, tool_choice=tool_choice)
             self._tool_choice = tool_choice
-            self._tool_dict = {tool.__name__: tool for tool in tools}
-            self._chain = self._prompt | model_with_tools
+            if isinstance(tools[0], BaseTool):
+                self._tool_dict = {tool.name: tool for tool in tools}  # type: ignore
+            else:
+                self._tool_dict = {tool.__name__: tool for tool in tools}
+            self._chain = model_with_tools
         else:
-            self._chain = self._prompt | self._model
+            self._chain = self._model
 
     def update_prompt(self, system_prompt: str, user_prompt_template: str) -> None:
         """
@@ -163,16 +165,13 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
         """
         self._system_prompt = system_prompt
         self._user_prompt_template = user_prompt_template
-        self._prompt = ChatPromptTemplate(
-            [("system", system_prompt), ("human", user_prompt_template)]
-        )
         if len(self._tool_dict) > 0:
             model_with_tools = self._model.bind_tools(
                 list(self._tool_dict.values()), tool_choice=self._tool_choice
             )
-            self._chain = self._prompt | model_with_tools
+            self._chain = model_with_tools
         else:
-            self._chain = self._prompt | self._model
+            self._chain = self._model
 
     @property
     def model(self) -> BaseChatModel:
@@ -198,6 +197,6 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
                 list(self._tool_dict.values()),
                 tool_choice=self._tool_choice,
             )
-            self._chain = self._prompt | model_with_tools
+            self._chain = model_with_tools
         else:
-            self._chain = self._prompt | self._model
+            self._chain = self._model

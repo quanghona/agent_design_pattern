@@ -101,6 +101,7 @@ class ChatCausalMultiTurnsChain(
             output[:, inputs.input_ids.shape[-1] :], skip_special_tokens=True
         )[0]
         output = utils.remove_thinking(output)
+        # TODO: aware with multimodal output
         conversation.append({"role": "assistant", "content": output})
         return conversation, output, "<tool_call>" in output
 
@@ -144,12 +145,15 @@ class ChatCausalMultiTurnsChain(
             "tool": "tool",
             "system": "system",
         }
-        message.responses.extend(
-            [
-                (name_map[conversation[i]["role"]], conversation[i]["content"])
-                for i in range(start_index, end_index)
-            ]
-        )
+        for i in range(start_index, end_index):
+            if (
+                isinstance(conversation[i]["content"], str)
+                and len(conversation[i]["content"]) > 0
+            ):
+                message.responses.append(
+                    (name_map[conversation[i]["role"]], conversation[i]["content"])
+                )
+        # TODO: handle other modals later
         return message
 
     @property
