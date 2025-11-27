@@ -51,7 +51,11 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
             SystemMessage(self._system_prompt),
             HumanMessage(self._user_prompt_template.format(**message.to_dict())),
         ]
-        total_turns = min(len(message.responses), self.include_history)
+        total_turns = (
+            min(len(message.responses), self.include_history)
+            if self.include_history >= 0
+            else len(message.responses)
+        )
         responses = message.responses[-total_turns:]
         for response in responses:
             if response[0] == "user":

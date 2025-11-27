@@ -8,7 +8,6 @@ from adp_core import utils
 from adp_core.agent import AgentMessage
 from adp_core.chain import BaseCausalMultiTurnsChain
 from pydantic import Field, PrivateAttr
-from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -21,7 +20,7 @@ class TransformersChainMessage(TypedDict):
 class ChatCausalMultiTurnsChain(
     BaseCausalMultiTurnsChain[TransformersChainMessage, str]
 ):
-    _model: _BaseModelWithGenerate
+    _model: Any
     _tokenizer: Any = PrivateAttr()  # AutoTokenizer has type of Unknown!
     device: Literal["cpu", "cuda"] = Field(
         ..., description="Device the model to run on"
@@ -32,7 +31,7 @@ class ChatCausalMultiTurnsChain(
 
     def __init__(
         self,
-        model: str | os.PathLike | Tuple[Any, _BaseModelWithGenerate],
+        model: str | os.PathLike | Tuple[Any, Any],
         tools: Sequence[Callable] = [],
         **kwargs,
     ):
@@ -68,7 +67,11 @@ class ChatCausalMultiTurnsChain(
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        total_turns = min(len(message.responses), self.include_history)
+        total_turns = (
+            min(len(message.responses), self.include_history)
+            if self.include_history >= 0
+            else len(message.responses)
+        )
         responses = message.responses[-total_turns:]
         for response in responses:
             if response[0] == "user":
@@ -158,11 +161,11 @@ class ChatCausalMultiTurnsChain(
         self._tool_dict = {tool.__name__: tool for tool in tools}
 
     @property
-    def model(self) -> Tuple[Any, _BaseModelWithGenerate]:
+    def model(self) -> Tuple[Any, Any]:
         return self._tokenizer, self._model
 
     @model.setter
-    def model(self, model: str | os.PathLike | Tuple[Any, _BaseModelWithGenerate]):
+    def model(self, model: str | os.PathLike | Tuple[Any, Any]):
         if isinstance(model, str) or isinstance(model, os.PathLike):
             self._tokenizer = AutoTokenizer.from_pretrained(model)
             # drop device_map if running on CPU
