@@ -36,7 +36,7 @@ class BaseLLMChain(BaseChain):
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
     _last_response_as_context: str | None = PrivateAttr(default=None)
     include_history: int = Field(
-        default=0, description="number of history message turns to include", ge=0
+        default=0, description="number of history message turns to include"
     )
     store_immediate_steps: bool = Field(
         default=False, description="store intermediate steps output"

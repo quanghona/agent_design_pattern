@@ -403,7 +403,10 @@ class DebateAgent(BaseAgent):
         default=None, description="The random seed for the 'random' pick strategy"
     )
     max_turns: int = Field(
-        5, description="The maximum number of debate turns to run", ge=1
+        5,
+        description="""The maximum number of debate turns to run.
+        Note: for the simultaneous strategy, the actual number of turn will be factor of the number of agents""",
+        ge=1,
     )
     should_stop: Callable[[AgentMessage], bool] | None = Field(
         default=None, description="The condition to stop the debate"
@@ -418,6 +421,10 @@ class DebateAgent(BaseAgent):
         while n < self.max_turns:
             if self.pick_strategy == "round_robin":
                 next_turn_agent = self.agents[n % len(self.agents)]
+            elif self.pick_strategy == "random":
+                next_turn_agent = random.choice(self.agents)
+            elif isinstance(self.pick_strategy, Callable):
+                next_turn_agent = self.pick_strategy(self.agents)
             elif self.pick_strategy == "simultaneous":
                 self.state = f"turn {n}: all agents running"
                 # TODO: parallelize the execution
@@ -429,10 +436,7 @@ class DebateAgent(BaseAgent):
                     [msg.responses[-1] for msg in current_turn_messages]
                 )
                 n += len(self.agents)
-            elif self.pick_strategy == "random":
-                next_turn_agent = random.choice(self.agents)
-            elif isinstance(self.pick_strategy, Callable):
-                next_turn_agent = self.pick_strategy(self.agents)
+                message.execution_result = "success"
             else:
                 raise ValueError(
                     "pick_strategy must be one of 'round_robin', 'random', 'simutaneous' or a function"
@@ -441,6 +445,8 @@ class DebateAgent(BaseAgent):
             if self.pick_strategy != "simultaneous":
                 self.state = f"turn {n}: agent {next_turn_agent.card.name} running"  # type: ignore
                 message = next_turn_agent.execute(message, **kwargs)  # type: ignore
+                if len(message.responses) > 0:
+                    pass
                 n += 1
 
             if message.execution_result != "success" or (
