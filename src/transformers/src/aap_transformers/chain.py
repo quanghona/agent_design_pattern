@@ -4,9 +4,9 @@ import os
 import re
 from typing import Any, Callable, Dict, List, Literal, Tuple, TypedDict
 
-from adp_core import utils
-from adp_core.agent import AgentMessage
-from adp_core.chain import BaseCausalMultiTurnsChain
+from aap_core import utils
+from aap_core.agent import AgentMessage
+from aap_core.chain import BaseCausalMultiTurnsChain
 from pydantic import Field, PrivateAttr
 
 from transformers import AutoModelForCausalLM, AutoTokenizer

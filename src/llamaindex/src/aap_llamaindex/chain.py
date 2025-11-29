@@ -1,9 +1,9 @@
 from collections.abc import Callable, Sequence
 from typing import Dict, List, Tuple
 
-from adp_core import utils
-from adp_core.agent import AgentMessage
-from adp_core.chain import BaseCausalMultiTurnsChain
+from aap_core import utils
+from aap_core.agent import AgentMessage
+from aap_core.chain import BaseCausalMultiTurnsChain
 from llama_index.core.base.llms.types import MessageRole, TextBlock
 from llama_index.core.llms import ChatMessage, ChatResponse
 from llama_index.core.llms.function_calling import FunctionCallingLLM

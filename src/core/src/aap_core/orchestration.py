@@ -8,7 +8,7 @@ from pydantic import Field, field_validator
 from rouge_score import rouge_scorer
 from sacrebleu import sentence_bleu
 
-from adp_core.types import AgentResponse
+from aap_core.types import AgentResponse
 
 from .agent import AgentMessage, BaseAgent
 from .chain import BaseLLMChain
@@ -591,6 +591,7 @@ class VotingAgent(BaseAgent):
         return message
 
     def _set_composed_state(self) -> None:
+        # TODO: find way to parallel voting of all agents
         self._composed_state = BaseAgent.build_composed_state(
             self, self.agents, "sequential"
         )
