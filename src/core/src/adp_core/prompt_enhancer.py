@@ -1,13 +1,15 @@
 import abc
 import json
 import os
-from typing import List
-from pydantic import Field, PrivateAttr, field_validator
-import tabulate
-import pandas as pd
-# import toon_format
+from collections.abc import Sequence
+from typing import List, Tuple
 
-from .types import AgentMessage, BaseChain
+import pandas as pd
+import tabulate
+from pydantic import Field, PrivateAttr, field_validator
+
+# import toon_format
+from .types import AgentMessage, BaseChain, ContentType
 
 
 class BasePromptEnhancer(BaseChain):
@@ -50,8 +52,10 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             raise ValueError("The format must contain at least {prompt} and {data}")
         return v
 
-    def parse_pandas(
-        self,
+    @classmethod
+    def from_pandas(
+        cls,
+        format: str,
         data: pd.DataFrame,
         prettier: str | tabulate.TableFormat | None = None,
     ):
@@ -72,18 +76,20 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             - If prettier is None, the dataframe is converted to a string using the to_string() method.
             - If prettier is not None, the dataframe is converted to a string using the tabulate module with the specified tablefmt.
         """
+        enhancer = DataFramePromptEnhancer(format=format)
         if prettier is None:
-            self._data = data.to_string()
+            enhancer._data = data.to_string()
         # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
-        #     self._data = toon_format.encode(data.to_dict())
+        #     enhancer._data = toon_format.encode(data.to_dict())
         else:
-            self._data = tabulate.tabulate(
+            enhancer._data = tabulate.tabulate(
                 data.to_dict(), headers="keys", tablefmt=prettier
             )
 
-        return self
+        return enhancer
 
-    def parse_string(self, data: str):
+    @classmethod
+    def from_string(cls, format: str, data: str):
         """
         Parse a string into a format that can be used by the prompt enhancer.
 
@@ -93,11 +99,13 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         Returns:
             self: The instance of the class.
         """
-        self._data = data
-        return self
+        enhancer = DataFramePromptEnhancer(format=format)
+        enhancer._data = data
+        return enhancer
 
-    def parse_dict(
-        self, data: dict, prettier: str | tabulate.TableFormat | None = None
+    @classmethod
+    def from_dict(
+        cls, format: str, data: dict, prettier: str | tabulate.TableFormat | None = None
     ):
         """
         Parse a dictionary into a format that can be used by the prompt enhancer.
@@ -116,16 +124,18 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             - If prettier is None, the dictionary is converted to a string using the str() method.
             - If prettier is not None, the dictionary is converted to a string using the tabulate module with the specified tablefmt.
         """
+        enhancer = DataFramePromptEnhancer(format=format)
         if prettier is None:
-            self._data = str(data)
+            enhancer._data = str(data)
         # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
-        #     self._data = toon_format.encode(data.to_dict())
+        #     enhancer._data = toon_format.encode(data.to_dict())
         else:
-            self._data = tabulate.tabulate(data, headers="keys", tablefmt=prettier)
+            enhancer._data = tabulate.tabulate(data, headers="keys", tablefmt=prettier)
 
-        return self
+        return enhancer
 
-    def parse_list(self, data: List[str], bullet_char: str = "-"):
+    @classmethod
+    def from_list(cls, format: str, data: List[str], bullet_char: str = "-"):
         """
         Parse a list of strings into a format that can be used by the prompt enhancer.
 
@@ -139,10 +149,12 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         Notes:
             - The list of strings is converted to a string using the join() method with the bullet character as the separator.
         """
-        self.data = "\n".join([f"{bullet_char} {d}" for d in data])
-        return self
+        enhancer = DataFramePromptEnhancer(format=format)
+        enhancer._data = "\n".join([f"{bullet_char} {d}" for d in data])
+        return enhancer
 
-    def parse_jsonl(self, path: str | os.PathLike[str]):
+    @classmethod
+    def from_jsonl(cls, format: str, path: str | os.PathLike[str]):
         """
         Parse a JSONL file into a format that can be used by the prompt enhancer.
 
@@ -167,8 +179,7 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             lines = f.read().splitlines()
 
         line_dicts = [json.loads(line) for line in lines]
-        self.parse_pandas(pd.DataFrame(line_dicts))
-        return self
+        return DataFramePromptEnhancer.from_pandas(format, pd.DataFrame(line_dicts))
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         if self._data is None:
@@ -177,3 +188,22 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             prompt=message.query, data=self._data, **kwargs
         )
         return message
+
+
+class BaseRAGPromptEnhancer(BasePromptEnhancer):
+    @abc.abstractmethod
+    def _search(self, query: str, **kwargs) -> Sequence[Tuple[ContentType, str]]:
+        """"""
+        pass
+
+    @abc.abstractmethod
+    def _format(
+        self, message: AgentMessage, data: Sequence[Tuple[ContentType, str]]
+    ) -> AgentMessage:
+        # For string type, the field we need to touch is `query`. For other types, the media `query_media` and `query_media_type` needed to modify
+        pass
+
+    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        data = self._search(message.query, **kwargs)
+        prompt = self._format(message, data)
+        return prompt

@@ -34,6 +34,10 @@ class BaseLLMChain(BaseChain):
 
 
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):
+    """
+    Base class for multi-turns chains.
+    """
+
     _last_response_as_context: str | None = PrivateAttr(default=None)
     include_history: int = Field(
         default=0, description="number of history message turns to include"

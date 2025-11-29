@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 ChainMessage = TypeVar("ChainMessage")
 ChainResponse = TypeVar("ChainResponse")
 AgentResponse = Tuple[str, str]
+ContentType = Literal["text", "image", "audio", "video", "document"]
 
 
 class AgentMessage(BaseModel):
@@ -17,11 +18,8 @@ class AgentMessage(BaseModel):
         In this message class, we don't store the system prompt and user template.
         Because each agent have their own system prompt and user template, which is not shared between agents.""",
     )
-    query_media: List[str] | None = Field(
+    query_media: List[Tuple[ContentType, str]] | None = Field(
         default=None, description="The media content associated with the query."
-    )
-    query_media_type: List[str] | None = Field(
-        default=None, description="The media type associated with the query."
     )
     origin: str | None = Field(
         default=None, description="The agent that send this message"
@@ -46,12 +44,9 @@ class AgentMessage(BaseModel):
     error_message: str | None = Field(
         default=None, description="The error message if the execution result is error."
     )
-    media: List[str] | None = Field(
+    media: List[Tuple[ContentType, str]] | None = Field(
         default=None,
         description="The additional media content. Can be image, video, audio, etc.",
-    )
-    media_type: List[str] | None = Field(
-        default=None, description="The media type associated with the media."
     )
 
     def flatten_dict(self, d: dict, parent_key: str = "", sep="_") -> Dict[str, Any]:
