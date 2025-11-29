@@ -1,0 +1,23 @@
+[project]
+name = "aap_llamaindex"
+version = "0.1.1.dev1"
+description = "LlamaIndex integration of agent design pattern"
+readme = "README.md"
+authors = [
+    { name = "Ly Hon Quang", email = "lyhonquang@gmail.com" }
+]
+requires-python = ">=3.10.12"
+dependencies = [
+    "aap_core>=0.1.0",
+    "llama-index>=0.14.8",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.14,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "llama-index-llms-ollama>=0.9.0",
+    "ipykernel",
+]
