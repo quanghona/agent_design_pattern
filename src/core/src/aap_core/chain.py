@@ -98,7 +98,7 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
 class TypicalLLMChain(BaseLLMChain):
     """
     A LLM chain that consists of all components in a typical response generation.
-    The chain  have 4 steps:
+    The chain has 4 steps:
     - input guardrail: validate the input message
     - prompt enhancement: add more context to the prompt or rewrite / refine the prompt
     - generate: generate the response. This steps should also handle the tool calling procedure and finalize the response
