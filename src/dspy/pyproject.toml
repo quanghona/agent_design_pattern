@@ -1,15 +1,24 @@
 [project]
-name = "adp-dspy"
+name = "aap_dspy"
 version = "0.1.0"
 description = "DsPy integration of agent deisgn pattern"
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
     { name = "Ly Hon Quang", email = "lyhonquang@gmail.com" }
 ]
 requires-python = ">=3.10.12"
 dependencies = [
-    "adp-core>=0.1.0",
+    "aap_core>=0.1.0",
     "dspy>=3.0.4",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
+lint = [
+    "ruff==0.14.0",
 ]
 
 [build-system]
