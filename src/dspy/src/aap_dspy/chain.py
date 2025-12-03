@@ -1,9 +1,47 @@
-from collections.abc import Callable
-from typing import List, Tuple
+import abc
+from typing import Generic, List, Tuple, TypeVar
 from aap_core.chain import BaseCausalMultiTurnsChain
 from aap_core.types import AgentMessage, AgentResponse
 import dspy
 from pydantic import Field, PrivateAttr
+
+
+Signature = TypeVar("Signature", bound=dspy.Signature)
+
+
+class BaseSignatureAdapter(abc.ABC, Generic[Signature]):
+    @classmethod
+    @abc.abstractmethod
+    def msg2sig(cls, message: AgentMessage) -> List[Signature]:
+        """The signature fields are only known when developing end application.
+        This function convert AgentMessage fields to dspy Signature before flow into the dspy predictor.
+
+        Args:
+            message (AgentMessage): message to convert
+
+        Returns:
+            Signature"""
+        raise NotImplementedError
+
+    @classmethod
+    @abc.abstractmethod
+    def sig2msg(cls, signature: Signature, name: str) -> AgentResponse:
+        """dspy.Signature to AgentMessage mapping.
+          This function used after the flow is completed and the dspy output need to convert back to the agent message.
+
+          Note about extracting the source name who generate the message and the message content from signature.
+          The source can be assistant or tool, the user message is the dspy.InputField, and dspy already handled the system message.
+          To unify about the source name, we can make the following assumptions:
+          If a signature have both OutputField and ToolCalls, it is a tool message. Otherwise it is an assistant message
+
+        Args:
+            signature (Signature): dspy output
+            name (str): agent name
+
+        Returns:
+            AgentResponse
+        """
+        raise NotImplementedError
 
 
 class ChatCausalMultiTurnsChain(
@@ -25,23 +63,13 @@ class ChatCausalMultiTurnsChain(
     """
 
     predictor: dspy.Module = Field(..., description="dspy predictor")
-    msg2sig: Callable[[AgentMessage], dspy.Signature] = Field(
+    adapter: type[BaseSignatureAdapter] = Field(
         ...,
-        description="""The signature fields are only known when developing end application.
-        This function convert AgentMessage fields to dspy Signature before flow into the dspy predictor.""",
-    )
-    sig2msg: Callable[[dspy.Signature, str], AgentResponse] = Field(
-        ...,
-        description="""dspy.Signature to AgentMessage mapping.
-        This function used after the flow is completed and the dspy output need to convert back to the agent message.
-
-        Note about extracting the source name who generate the message and the message content from signature.
-        The source can be assistant or tool, the user message is the dspy.InputField, and dspy already handled the system message.
-        To unify about the source name, we can make the following assumptions:
-        If a signature have both OutputField and ToolCalls, it is a tool message. Otherwise it is an assistant message""",
+        description="The adapter convert between AgentMessage and dspy.Signature",
     )
     _signature: type[dspy.Signature] = PrivateAttr()
     _tool_calls_field: str | None = PrivateAttr(None)
+    _lm: dspy.LM | None = PrivateAttr(None)
 
     def __init__(self, signature: str | type[dspy.Signature], **kwargs):
         super().__init__(**kwargs)
@@ -52,13 +80,18 @@ class ChatCausalMultiTurnsChain(
                 break
 
     def _prepare_conversation(self, message: AgentMessage) -> List[dspy.Signature]:
-        return [self.msg2sig(message)]
+        return self.adapter.msg2sig(message)
 
     def _generate_response(
         self, conversation: List[dspy.Signature], **kwargs
     ) -> Tuple[List[dspy.Signature], dspy.Prediction, bool]:
-        sig = conversation[0].model_dump()
-        data = self.predictor(**sig)
+        sig = conversation[0].model_dump(exclude_none=True)
+        if self._lm:
+            # change context if possible
+            with dspy.context(lm=self._lm):
+                data = self.predictor(**sig)
+        else:
+            data = self.predictor(**sig)
         has_tool = (
             False
             if self._tool_calls_field is None
@@ -91,6 +124,10 @@ class ChatCausalMultiTurnsChain(
         )
         end_index = len(conversation)
         for i in range(start_index, end_index):
-            message.responses.append(self.sig2msg(conversation[i], self.name))
+            message.responses.append(self.adapter.sig2msg(conversation[i], self.name))
             # TODO: handle other modals later
         return message
+
+    def with_lm(self, lm: dspy.LM) -> "ChatCausalMultiTurnsChain":
+        self._lm = lm
+        return self
