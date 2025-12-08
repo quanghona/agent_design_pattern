@@ -10,6 +10,8 @@ Signature = TypeVar("Signature", bound=dspy.Signature)
 
 
 class BaseSignatureAdapter(abc.ABC, Generic[Signature]):
+    """The adapter convert between AgentMessage and dspy.Signature"""
+
     @classmethod
     @abc.abstractmethod
     def msg2sig(cls, message: AgentMessage) -> List[Signature]:
@@ -85,7 +87,7 @@ class ChatCausalMultiTurnsChain(
     def _generate_response(
         self, conversation: List[dspy.Signature], **kwargs
     ) -> Tuple[List[dspy.Signature], dspy.Prediction, bool]:
-        sig = conversation[0].model_dump(exclude_none=True)
+        sig = conversation[-1].model_dump(exclude_none=True)
         if self._lm:
             # change context if possible
             with dspy.context(lm=self._lm):
@@ -128,6 +130,6 @@ class ChatCausalMultiTurnsChain(
             # TODO: handle other modals later
         return message
 
-    def with_lm(self, lm: dspy.LM) -> "ChatCausalMultiTurnsChain":
+    def with_lm(self, lm: dspy.LM | None) -> "ChatCausalMultiTurnsChain":
         self._lm = lm
         return self
