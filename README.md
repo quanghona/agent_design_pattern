@@ -41,3 +41,6 @@ Project is in initial development phase. All components are subject to change si
     + video related agents
     + other types of data: time-series, 3D, action as input data, etc
     + multimodal agent
+
+Once the foundation layer becoming more stable, serious testings will be started soon to strengthen the low layers.
+The doc for this project is also available soon with new versions release
