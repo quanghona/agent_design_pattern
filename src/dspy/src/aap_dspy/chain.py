@@ -22,7 +22,7 @@ class BaseSignatureAdapter(abc.ABC, Generic[Signature]):
         This function convert AgentMessage fields to dspy Signature before flow into the dspy predictor.
         The filling logic for signature should be implemented in this method in the child class
 
-        Specifically, there are 2 attribute need to taken care of:
+        Specifically, there are 2 attributes need to taken care of:
         - prefill dictionary in this adapter class. This is also known as the static filling
         - the context dictionary in the AgentMessage. This is also known as the dynamic filling
 
@@ -169,7 +169,7 @@ class ChatCausalMultiTurnsChain(
         self, message: AgentMessage, conversation: List[dspy.Signature]
     ) -> AgentMessage:
         start_index = (
-            min(len(message.responses), self.include_history)
+            min(len(message.responses), self.include_history) + 1
             if self.store_immediate_steps
             else len(conversation) - 1
         )
