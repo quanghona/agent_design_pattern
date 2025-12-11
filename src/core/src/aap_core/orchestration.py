@@ -35,11 +35,6 @@ class ReflectionAgent(BaseAgent):
         ...,
         description="LLM chain that perform reflection on the result of the main task",
     )
-    task_response_key: str = Field(
-        default="context_response",
-        description="""The key of which to store the context (e.g. intermediate result) during generation.
-        Note that the key need to start with 'context_'""",
-    )
 
     @field_validator("task_response_key")
     @classmethod
@@ -61,11 +56,7 @@ class ReflectionAgent(BaseAgent):
             return message
 
         self.state = "reflecting"
-        task_response_key = self.task_response_key.replace("context_", "")
         reflect_message = message.model_copy(deep=True)
-        reflect_message.context = {}
-        _, reflect_message.context[task_response_key] = reflect_message.responses[-1]  # type: ignore
-        reflect_message.responses = []
         result_message = self.chain_reflection.invoke(reflect_message, **kwargs)
         self.state = "idle"
         result_message.origin = self.card.name
