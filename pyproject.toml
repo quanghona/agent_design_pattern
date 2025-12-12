@@ -13,6 +13,7 @@ members = [
     "src/langchain",
     "src/llamaindex",
     "src/transformers",
+    "src/dspy",
 ]
 
 [dependency-groups]
