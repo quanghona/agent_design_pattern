@@ -1,7 +1,7 @@
 [project]
 name = "aap_dspy"
-version = "0.1.0"
-description = "DsPy integration of agent deisgn pattern"
+version = "0.1.2.dev1"
+description = "DsPy integration of agent design pattern"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
@@ -12,6 +12,19 @@ dependencies = [
     "aap_core>=0.1.0",
     "dspy>=3.0.4",
 ]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Framework :: Pydantic :: 2",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/quanghona/agent_design_pattern.git"
 
 [dependency-groups]
 dev = [
