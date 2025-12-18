@@ -23,14 +23,20 @@ class WeaviatePromptEnhancer(BaseRAGPromptEnhancer):
     )
     rm: WeaviateRM = Field(..., description="The Weaviate retriever model object")
 
-    def _search(self, query: str, **kwargs) -> Sequence[Tuple[ContentType, str]]:
-        context = dspy.Retrieve(**kwargs)(query).passages
+    def _search(
+        self, query: str, k: int = 3, **kwargs
+    ) -> Sequence[Tuple[ContentType, str]]:
+        context = dspy.Retrieve(k=k)(query).passages
         return [("text", c) for c in context]
 
     def _format(
-        self, message: AgentMessage, data: Sequence[Tuple[ContentType, str]]
+        self,
+        message: AgentMessage,
+        data: Sequence[Tuple[ContentType, str]],
+        separator: str = "",
+        **kwargs,
     ) -> AgentMessage:
-        context = "\n".join([content for _, content in data])
+        context = separator.join([content for _, content in data])
         # TODO: handle multimodal data
         message.query = self.format.format(query=message.query, context=context)
         return message

@@ -193,17 +193,16 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
 class BaseRAGPromptEnhancer(BasePromptEnhancer):
     @abc.abstractmethod
     def _search(self, query: str, **kwargs) -> Sequence[Tuple[ContentType, str]]:
-        """"""
         pass
 
     @abc.abstractmethod
     def _format(
-        self, message: AgentMessage, data: Sequence[Tuple[ContentType, str]]
+        self, message: AgentMessage, data: Sequence[Tuple[ContentType, str]], **kwargs
     ) -> AgentMessage:
         # For string type, the field we need to touch is `query`. For other types, the media `query_media` and `query_media_type` needed to modify
         pass
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         data = self._search(message.query, **kwargs)
-        prompt = self._format(message, data)
+        prompt = self._format(message, data, **kwargs)
         return prompt
