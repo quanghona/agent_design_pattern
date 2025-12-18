@@ -40,7 +40,7 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         ...,
         description="""
         The format of the prompt.
-        The format must contain at least {prompt} and {data}.
+        The format must contain at least {query} and {data}.
         Other parameters can be used and parsed""",
     )
     _data: str | None = PrivateAttr(None)
@@ -48,8 +48,8 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
     @field_validator("format")
     @classmethod
     def check_starts_with_prompt_and_data(cls, v: str) -> str:
-        if "{prompt}" not in v or "{data}" not in v:
-            raise ValueError("The format must contain at least {prompt} and {data}")
+        if "{query}" not in v or "{data}" not in v:
+            raise ValueError("The format must contain at least {query} and {data}")
         return v
 
     @classmethod
@@ -185,7 +185,7 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         if self._data is None:
             raise ValueError("Data not parsed yet")
         message.query = self.format.format(
-            prompt=message.query, data=self._data, **kwargs
+            query=message.query, data=self._data, **kwargs
         )
         return message
 

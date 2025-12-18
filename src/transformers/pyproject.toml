@@ -37,3 +37,8 @@ build-backend = "uv_build"
 dev = [
     "ipykernel>=7.1.0",
 ]
+
+[project.optional-dependencies]
+weaviate = [
+    "weaviate"
+]

@@ -36,3 +36,8 @@ dev = [
     "langchain-ollama>=1.0.0",
     "ipykernel",
 ]
+
+[project.optional-dependencies]
+weaviate = [
+    "langchain-weaviate"
+]
