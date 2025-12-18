@@ -4,6 +4,7 @@ version = "0.1.1.dev1"
 description = "Agent design pattern core framework"
 readme = "README.md"
 license = { text = "MIT" }
+keywords = ["agent", "ai", "pattern", "llm"]
 authors = [
     { name = "Ly Hon Quang", email = "lyhonquang@gmail.com" }
 ]
