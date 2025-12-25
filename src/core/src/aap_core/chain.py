@@ -2,12 +2,13 @@ import abc
 from collections.abc import Sequence
 from typing import Callable, Generic, List, Tuple
 
-from pydantic import Field, PrivateAttr
+from aap_core.prompt_augmenter import BaseRetriever
+from pydantic import Field, PrivateAttr, field_validator
 
 from .guardrail import BaseGuardRail, PassGuardRail
-from .prompt_enhancer import (
-    BasePromptEnhancer,
-    IdentityPromptEnhancer,
+from .prompt_augmenter import (
+    BasePromptAugmenter,
+    IdentityPromptAugmenter,
 )
 from .types import AgentMessage, BaseChain, ChainMessage, ChainResponse
 
@@ -108,8 +109,8 @@ class TypicalLLMChain(BaseLLMChain):
         default=PassGuardRail(),
         description="validate the input message",
     )
-    prompt_enhancer: BasePromptEnhancer = Field(
-        default=IdentityPromptEnhancer(),
+    prompt_augmenter: BasePromptAugmenter = Field(
+        default=IdentityPromptAugmenter(),
         description="add more context to the prompt or rewrite / refine the prompt",
     )
     tools: Sequence[Callable] = Field(
@@ -128,14 +129,14 @@ class TypicalLLMChain(BaseLLMChain):
 
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
         message = self.input_guardrail(message)
-        message = self.prompt_enhancer(message)
+        message = self.prompt_augmenter(message)
         message = self.generate(message, **kwargs)
         message = self.output_guardrail(message)
         return message
 
 
-class LLMPromptEnhancer(BasePromptEnhancer):
-    """A prompt enhancer that use an LLM chain to rewrite the prompt."""
+class MetaPromptAugmenter(BasePromptAugmenter):
+    """A prompt augmenter that use an LLM chain to rewrite the prompt."""
 
     chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
 

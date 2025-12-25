@@ -1,72 +1,65 @@
 import abc
 import json
-import os
-from collections.abc import Sequence
-from typing import List, Tuple
+from collections.abc import Iterable
 
 import pandas as pd
 import tabulate
 from pydantic import Field, PrivateAttr, field_validator
 
-# import toon_format
-from .types import AgentMessage, BaseChain, ContentType
+from aap_core.types import AgentMessage, BaseChain
 
 
-class BasePromptEnhancer(BaseChain):
-    """A base class to enhance / rewrite the prompt.
-
-    There are two types of prompt enhancement:
-    - Data enhancement: Give more context to the prompt by adding external data, either by using files (CSV, JSON, Markdown, etc.), database (SQL,...) or more advanced techniques like RAG, web search.
-    - Structure enhancement: Rewrite / refine the prompt partially or entirely.
-    """
+class BaseRetriever(BaseChain):
+    post_process: BaseChain | None = Field(
+        default=None, description="The post process function if any"
+    )
 
     @abc.abstractmethod
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        return super().__call__(message, **kwargs)
-
-
-class IdentityPromptEnhancer(BasePromptEnhancer):
-    """A prompt enhancer that does nothing.
-    This serves as a default prompt enhancer."""
+    def retrieve(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        pass
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        message = self.retrieve(message, **kwargs)
+        if self.post_process:
+            # reranker, summarizer, etc
+            message = self.post_process(message)
         return message
 
 
-class DataFramePromptEnhancer(BasePromptEnhancer):
-    """A prompt enhancer that uses a pandas dataframe to give more context to the prompt."""
-
-    format: str = Field(
-        ...,
-        description="""
-        The format of the prompt.
-        The format must contain at least {query} and {data}.
-        Other parameters can be used and parsed""",
-    )
+class DataFrameRetriever(BaseRetriever):
     _data: str | None = PrivateAttr(None)
+    data_key: str = Field(
+        default="context.data", description="The key to the data in the message"
+    )
 
-    @field_validator("format")
+    @field_validator("data_key")
     @classmethod
-    def check_starts_with_prompt_and_data(cls, v: str) -> str:
-        if "{query}" not in v or "{data}" not in v:
-            raise ValueError("The format must contain at least {query} and {data}")
+    def check_starts_with_prefix(cls, v: str) -> str:
+        if not v.startswith("context."):
+            raise ValueError("task_response_key must start with 'context.'")
         return v
 
     @classmethod
     def from_pandas(
         cls,
-        format: str,
         data: pd.DataFrame,
+        data_key: str = "context.data",
         prettier: str | tabulate.TableFormat | None = None,
+        **kwargs,
     ):
         """
         Parse a pandas dataframe into a string format.
+        Tip: to parse file such as csv, parquet, etc. we can use this factory method to create a retriever
 
         Args:
             data (pd.DataFrame): The pandas dataframe to be parsed.
             prettier (str | tabulate.TableFormat | None, optional): The prettier to be used. Defaults to None.
             The available table formats are from the [tabulate](https://pypi.org/project/tabulate/) library.
             [toon](https://github.com/toon-format/spec) are also supported
+
+            **kwargs: Additional keyword arguments to be passed to the conversion statement.
+            - For pandas.DataFrame.to_string(), see https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_string.html
+            - For tabulate.tabulate(), see https://pypi.org/project/tabulate/
 
         Returns:
             self: The instance of the class.
@@ -76,20 +69,20 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             - If prettier is None, the dataframe is converted to a string using the to_string() method.
             - If prettier is not None, the dataframe is converted to a string using the tabulate module with the specified tablefmt.
         """
-        enhancer = DataFramePromptEnhancer(format=format)
+        retriever = DataFrameRetriever(data_key=data_key)
         if prettier is None:
-            enhancer._data = data.to_string()
+            retriever._data = data.to_string(**kwargs)
         # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
-        #     enhancer._data = toon_format.encode(data.to_dict())
+        #     retriever._data = toon_format.encode(data.to_dict())
         else:
-            enhancer._data = tabulate.tabulate(
-                data.to_dict(), headers="keys", tablefmt=prettier
+            retriever._data = tabulate.tabulate(
+                data.to_dict(), tablefmt=prettier, **kwargs
             )
 
-        return enhancer
+        return retriever
 
     @classmethod
-    def from_string(cls, format: str, data: str):
+    def from_string(cls, data: str, data_key: str = "context.data"):
         """
         Parse a string into a format that can be used by the prompt enhancer.
 
@@ -99,13 +92,17 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         Returns:
             self: The instance of the class.
         """
-        enhancer = DataFramePromptEnhancer(format=format)
-        enhancer._data = data
-        return enhancer
+        retriever = DataFrameRetriever(data_key=data_key)
+        retriever._data = data
+        return retriever
 
     @classmethod
     def from_dict(
-        cls, format: str, data: dict, prettier: str | tabulate.TableFormat | None = None
+        cls,
+        data: dict,
+        data_key: str = "context.data",
+        prettier: str | tabulate.TableFormat | None = None,
+        **kwargs,
     ):
         """
         Parse a dictionary into a format that can be used by the prompt enhancer.
@@ -116,6 +113,9 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             The available table formats are from the [tabulate](https://pypi.org/project/tabulate/) library.
             [toon](https://github.com/toon-format/spec) are also supported
 
+            **kwargs: Additional keyword arguments to be passed to the conversion statement.
+            - For tabulate.tabulate(), see https://pypi.org/project/tabulate/
+
         Returns:
             self: The instance of the class.
 
@@ -124,18 +124,20 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             - If prettier is None, the dictionary is converted to a string using the str() method.
             - If prettier is not None, the dictionary is converted to a string using the tabulate module with the specified tablefmt.
         """
-        enhancer = DataFramePromptEnhancer(format=format)
+        retriever = DataFrameRetriever(data_key=data_key)
         if prettier is None:
-            enhancer._data = str(data)
+            retriever._data = str(data)
         # elif prettier == "toon":      # toon_format currently is beta release, waiting 1.0.0 release
-        #     enhancer._data = toon_format.encode(data.to_dict())
+        #     retriever._data = toon_format.encode(data.to_dict())
         else:
-            enhancer._data = tabulate.tabulate(data, headers="keys", tablefmt=prettier)
+            retriever._data = tabulate.tabulate(data, tablefmt=prettier, **kwargs)
 
-        return enhancer
+        return retriever
 
     @classmethod
-    def from_list(cls, format: str, data: List[str], bullet_char: str = "-"):
+    def from_iterable(
+        cls, data: Iterable[str], data_key: str = "context.data", bullet_char: str = "-"
+    ):
         """
         Parse a list of strings into a format that can be used by the prompt enhancer.
 
@@ -149,17 +151,23 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
         Notes:
             - The list of strings is converted to a string using the join() method with the bullet character as the separator.
         """
-        enhancer = DataFramePromptEnhancer(format=format)
-        enhancer._data = "\n".join([f"{bullet_char} {d}" for d in data])
-        return enhancer
+        retriever = DataFrameRetriever(data_key=data_key)
+        retriever._data = "\n".join([f"{bullet_char} {d}" for d in data])
+        return retriever
 
     @classmethod
-    def from_jsonl(cls, format: str, path: str | os.PathLike[str]):
+    def from_jsonl(
+        cls, path: str | os.PathLike[str], data_key: str = "context.data", **kwargs
+    ):
         """
         Parse a JSONL file into a format that can be used by the prompt enhancer.
 
+        This method reads a JSONL file line by line and converts each line to a dictionary using the json.loads() method.
+        The resulting dictionary is then converted to a pandas DataFrame before initiate the object
+
         Args:
             path (str): The path to the JSONL file.
+            **kwargs: Additional keyword arguments to be passed to the DataFrameRetriever.from_pandas() method.
 
         Returns:
             self: The instance of the class.
@@ -179,30 +187,14 @@ class DataFramePromptEnhancer(BasePromptEnhancer):
             lines = f.read().splitlines()
 
         line_dicts = [json.loads(line) for line in lines]
-        return DataFramePromptEnhancer.from_pandas(format, pd.DataFrame(line_dicts))
-
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        if self._data is None:
-            raise ValueError("Data not parsed yet")
-        message.query = self.format.format(
-            query=message.query, data=self._data, **kwargs
+        return DataFrameRetriever.from_pandas(
+            pd.DataFrame(line_dicts), data_key=data_key, **kwargs
         )
+
+    def retrieve(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        context_key = self.data_key.replace("context.", "")
+        if message.context is None:
+            message.context = {context_key: self._data}
+        else:
+            message.context[context_key] = self._data
         return message
-
-
-class BaseRAGPromptEnhancer(BasePromptEnhancer):
-    @abc.abstractmethod
-    def _search(self, query: str, **kwargs) -> Sequence[Tuple[ContentType, str]]:
-        pass
-
-    @abc.abstractmethod
-    def _format(
-        self, message: AgentMessage, data: Sequence[Tuple[ContentType, str]], **kwargs
-    ) -> AgentMessage:
-        # For string type, the field we need to touch is `query`. For other types, the media `query_media` and `query_media_type` needed to modify
-        pass
-
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        data = self._search(message.query, **kwargs)
-        prompt = self._format(message, data, **kwargs)
-        return prompt
