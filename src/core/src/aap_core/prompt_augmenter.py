@@ -252,21 +252,139 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         pairs: DataSet,
         **kwargs,
     ) -> str:
-        msg = self.lamarckian_chain.invoke(message, pairs=pairs, **kwargs)
+        dataset = "\n\n".join(
+            [f"Input: {pair[0]}\nOutput: {pair[1]}" for pair in pairs]
+        )
+        if self.lamarckian_message is None:
+            # The default prompt in the paper
+            message = AgentMessage(
+                query="""I gave a friend an instruction and some input. The friend read the instruction and wrote an output for every one of the inputs. Here are the input-output pairs:
+
+## Example ##
+{context.pairs}
+
+The instruction was:
+""",
+                context={"pairs": dataset},
+            )
+        else:
+            message = self.lamarckian_message
+            if message.context is None:
+                message.context = {"pairs": dataset}
+            else:
+                message.context["pairs"] = dataset
+        msg = self.lamarckian_chain.invoke(message, **kwargs)
         return msg.responses[-1][1]
 
     def eda(self, candidates: Sequence[str], **kwargs) -> str:
-        pass
+        # TODO: Choose parents from a list of prompts
+        cand_str = "\n\n".join(candidates)
+        if self.eda_message is None:
+            message = AgentMessage(
+                query="""You are a mutator. Given a series of prompts, your task is to generate another prompt
+with the same semantic meaning and intentions.
+
+## Existing Prompts ##
+{context.candidates}
+
+The newly mutated prompt is:""",
+                context={"candidates": cand_str},
+            )
+        else:
+            message = self.eda_message
+            if message.context is None:
+                message.context = {"candidates": cand_str}
+            else:
+                message.context["candidates"] = cand_str
+        message = self.eda_chain(message, **kwargs)
+        return message.responses[-1][1]
 
     def crossover(self, parents: Sequence[str], **kwargs) -> str:
-        # Choose 2 parents from a list of prompts
-        pass
+        # TODO: Choose parents from a list of prompts
+        chosen_parent = []
+        parent_prompt = ""
+        for parent in parents:
+            chosen_parent.append(parent)
+            parent_prompt += f"Parent prompt {len(chosen_parent)}: {parent}\n"
+        if self.crossover_message is None:
+            message = AgentMessage(
+                query="""You are a mutator who is familiar with the concept of cross-over in genetic algorithm,
+namely combining the genetic information of two parents to generate new offspring.
+Given two parent prompts, you will perform a cross-over to generate an offspring
+prompt that covers the same semantic meaning as both parents.
+# Example
+Parent prompt 1: Now you are a categorizer, your mission is to ascertain the
+sentiment of the provided text, either favorable or unfavorable
+Parent prompt 2: Assign a sentiment label to the given sentence from [’negative’, ’positive’] and return only the label without any other text.
+Offspring prompt: Your mission is to ascertain the sentiment of the provided text and assign a sentiment label from [’negative’, ’positive’].
+## Given ##
+{context.parents}
+Offspring prompt:
+""",
+                context={"parents": parent_prompt},
+            )
+        else:
+            message = self.crossover_message
+            if message.context is None:
+                message.context = {"parents": parent_prompt}
+            else:
+                message.context["parents"] = parent_prompt
+        message = self.crossover_chain(message, **kwargs)
+        return message.responses[-1][1]
 
     def feedback(self, candidate: str, **kwargs) -> str:
-        pass
+        # TODO: put wrong cases to prompt
+        if self.examiner_message is None:
+            message = AgentMessage(
+                query="", context={"candidate": candidate, "wrong_cases": ""}
+            )
+        else:
+            message = self.examiner_message
+            if message.context is None:
+                message.context = {"candidate": candidate, "wrong_cases": ""}
+            else:
+                message.context["candidate"] = candidate
+                message.context["wrong_cases"] = ""
+        message = self.examiner_chain(message, **kwargs)
+
+        feedback_msg = message.responses[-1][1]
+        if self.improver_message is None:
+            message = AgentMessage(
+                query="", context={"candidate": candidate, "feedback": feedback_msg}
+            )
+        else:
+            message = self.improver_message
+            if message.context is None:
+                message.context = {"candidate": candidate, "feedback": feedback_msg}
+            else:
+                message.context["candidate"] = candidate
+                message.context["feedback"] = feedback_msg
+        message = self.improver_chain(message, **kwargs)
+        return message.responses[-1][1]
 
     def semantic(self, candidate: str, **kwargs) -> str:
-        message = AgentMessage(query="", context={"candidate": candidate})
+        if self.semantic_message is None:
+            message = AgentMessage(
+                query="""You are a mutator. Given a prompt, your task is to generate another prompt with the
+same semantic meaning and intentions.
+# Example:
+current prompt: Your mission is to ascertain the sentiment of the provided text and
+assign a sentiment label from ['negative', 'positive'].
+mutated prompt: Determine the sentiment of the given sentence and assign a label
+from ['negative', 'positive'].
+
+## Given ##
+current prompt: {context.candidate}
+mutated prompt:
+""",
+                context={"candidate": candidate},
+            )
+        else:
+            message = self.semantic_message
+            if message.context is None:
+                message.context = {"candidate": candidate}
+            else:
+                message.context["candidate"] = candidate
         message = self.semantic_chain(message, **kwargs)
         return message.responses[-1][1]
 
