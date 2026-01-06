@@ -142,7 +142,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     _scorer: Callable[[BaseLLMChain, str, DataSet], float] = PrivateAttr()
 
     base_chain: BaseLLMChain = Field(
-        ..., description="The base LLM chain to use for SEE"
+        ..., description="The base LLM chain used by SEE to generate result"
     )
     lamarckian_chain: BaseLLMChain = Field(
         ..., description="The LLM chain to use for Lamarckian operator"
@@ -153,7 +153,10 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     crossover_chain: BaseLLMChain = Field(
         ..., description="The LLM chain to use for Crossover operator"
     )
-    feedback_chain: BaseLLMChain = Field(
+    examiner_chain: BaseLLMChain = Field(
+        ..., description="The LLM chain to use for Feedback operator"
+    )
+    improver_chain: BaseLLMChain = Field(
         ..., description="The LLM chain to use for Feedback operator"
     )
     semantic_chain: BaseLLMChain = Field(
@@ -170,6 +173,54 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         - See-io-pair: provide a set of input-output pairs. SEE apply Lamarckian to generate prompts
         - SEE-example: SEE take a intial prompt and use Semantic to generate new prompts
         """,
+    )
+
+    lamarckian_message: AgentMessage | None = Field(
+        default=None,
+        description="""The prompt use for Lamarckian operator.
+        If not provided, the default prompt template will be constructed,
+        The default key for pairs is {context.pairs}.
+        """,
+    )
+    eda_message: AgentMessage | None = Field(
+        default=None,
+        description="""
+    The prompt use for EDA operator.
+    If not provided, the default prompt template will be constructed,
+    The default key for candidates is {context.candidates}.
+    """,
+    )
+    crossover_message: AgentMessage | None = Field(
+        default=None,
+        description="""
+    The prompt use for Crossover operator.
+    If not provided, the default prompt template will be constructed,
+    The default key for parents is {context.parents}.
+""",
+    )
+    examiner_message: AgentMessage | None = Field(
+        default=None,
+        description="""
+    The prompt use for examine candidate, for feedback operator
+    If not provided, the default prompt template will be constructed
+    the default key for wrong cases is {context.wrong_cases}
+""",
+    )
+    improver_message: AgentMessage | None = Field(
+        default=None,
+        description="""
+    The prompt use to improve the existing candidate, for feedback operator.
+    If not provided, the default prompt template will be constructed,
+    The default key for feedback is {context.feedback}
+""",
+    )
+    semantic_message: AgentMessage | None = Field(
+        default=None,
+        description="""
+    The prompt use for Semantic operator.
+    If not provided, the default prompt template will be constructed,
+    The default key for candidate is {context.candidate}.
+    """,
     )
 
     pool_size_0: int = Field(
@@ -202,10 +253,6 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     )
     performance_gain_threshold: float = Field(
         default=0.01, description="Performance gain threshold"
-    )
-    crossover_with_distinct: bool = Field(
-        default=False,
-        description="Whether to use Crossover with distinct to generate new prompt",
     )
 
     def __init__(
@@ -247,11 +294,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return 0.0
 
     # TODO: extend algorithm to multimodal data
-    def lamarckian(
-        self,
-        pairs: DataSet,
-        **kwargs,
-    ) -> str:
+    def lamarckian(self, pairs: DataSet, **kwargs) -> str:
         dataset = "\n\n".join(
             [f"Input: {pair[0]}\nOutput: {pair[1]}" for pair in pairs]
         )
@@ -315,8 +358,9 @@ prompt that covers the same semantic meaning as both parents.
 # Example
 Parent prompt 1: Now you are a categorizer, your mission is to ascertain the
 sentiment of the provided text, either favorable or unfavorable
-Parent prompt 2: Assign a sentiment label to the given sentence from [’negative’, ’positive’] and return only the label without any other text.
-Offspring prompt: Your mission is to ascertain the sentiment of the provided text and assign a sentiment label from [’negative’, ’positive’].
+Parent prompt 2: Assign a sentiment label to the given sentence from ['negative', 'positive'] and return only the label without any other text.
+Offspring prompt: Your mission is to ascertain the sentiment of the provided text and assign a sentiment label from ['negative', 'positive'].
+
 ## Given ##
 {context.parents}
 Offspring prompt:
@@ -336,7 +380,18 @@ Offspring prompt:
         # TODO: put wrong cases to prompt
         if self.examiner_message is None:
             message = AgentMessage(
-                query="", context={"candidate": candidate, "wrong_cases": ""}
+                query="""You are a quick improver. Given an existing prompt and a series of cases where it
+made mistakes. Look through each case carefully and identify what is causing the
+mistakes. Based on these observations, output ways to improve the prompts based
+on the mistakes.
+## Existing Prompt ##
+{context.candidate}
+## Cases where it gets wrong:##
+{context.wrong_cases}
+ways to improve the existing prompt based on observations of the mistakes in the
+cases above are:
+""",
+                context={"candidate": candidate, "wrong_cases": ""},
             )
         else:
             message = self.examiner_message
@@ -350,7 +405,14 @@ Offspring prompt:
         feedback_msg = message.responses[-1][1]
         if self.improver_message is None:
             message = AgentMessage(
-                query="", context={"candidate": candidate, "feedback": feedback_msg}
+                query="""You are a quick improver. Given an existing prompt and feedback on how it should
+improve. Create an improved version based on the feedback.
+## Existing Prompt ##
+{context.candidate}
+## Feedback ##
+{context.feedback}
+## Improved Prompt ##""",
+                context={"candidate": candidate, "feedback": feedback_msg},
             )
         else:
             message = self.improver_message
