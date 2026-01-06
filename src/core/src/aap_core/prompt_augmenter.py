@@ -1,7 +1,7 @@
 import abc
 from collections.abc import Callable, Sequence
 import copy
-from typing import Literal, Tuple
+from typing import Concatenate, Dict, Literal, Tuple
 import warnings
 
 from aap_core.chain import BaseLLMChain
@@ -139,7 +139,14 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     """
 
     DataSet = Sequence[Tuple[str, str]]
-    _scorer: Callable[[BaseLLMChain, str, DataSet], float] = PrivateAttr()
+    PerformanceTuple = Tuple[Sequence[float], float]
+    _scorer: Callable[
+        Concatenate[
+            BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...
+        ],
+        PerformanceTuple | None,
+    ] = PrivateAttr()
+    _scorer_args: Dict = PrivateAttr()
 
     base_chain: BaseLLMChain = Field(
         ..., description="The base LLM chain used by SEE to generate result"
@@ -166,6 +173,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     dev_set: DataSet = Field(
         ...,
         description="The dataset for evaluate prompt. This is D_dev in the algorithm",
+        min_length=1,
     )
     init_data: DataSet | str = Field(
         ...,
@@ -257,8 +265,19 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     def __init__(
         self,
-        scorer: Callable[[BaseLLMChain, str, DataSet], float]
-        | Literal["hamming", "levenshtein", "cosine"] = "hamming",
+        scorer: Callable[
+            Concatenate[
+                BaseLLMChain,
+                str,
+                Sequence[str],
+                Sequence[PerformanceTuple],
+                DataSet,
+                ...,
+            ],
+            PerformanceTuple | None,
+        ]
+        | Literal["hamming"] = "hamming",
+        scorer_args: Dict = {},
         **kwargs,
     ):
         warnings.warn(
@@ -268,30 +287,50 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         super().__init__(**kwargs)
         if scorer == "hamming":
             self._scorer = SEEPromptAugmenter._hamming_scorer
-        elif scorer == "levenshtein":
-            self._scorer = SEEPromptAugmenter._levenshtein_scorer
-        elif scorer == "cosine":
-            self._scorer = SEEPromptAugmenter._cosine_scorer
+        # elif scorer == "levenshtein":
+        #     self._scorer = SEEPromptAugmenter._levenshtein_scorer
+        # elif scorer == "cosine":
+        #     self._scorer = SEEPromptAugmenter._cosine_scorer
         elif isinstance(scorer, Callable):
             self._scorer = scorer
+        else:
+            raise ValueError("scorer not supported")
+        self._scorer_args = scorer_args
+
+    @classmethod
+    def score(
+        cls, chain: BaseLLMChain, prompt: str, dataset: DataSet
+    ) -> PerformanceTuple:
+        performance_vector = []
+        for data in dataset:
+            query = f"""{prompt}
+            Question:
+            {data[0]}
+            Answer:"""
+            message = chain.invoke(AgentMessage(query=query))
+            # TODO: diverse options for selecting comparasion method
+            performance_vector.append(message.responses[-1][1] == data[1])
+        return performance_vector, sum(performance_vector) / len(performance_vector)
 
     @classmethod
     def _hamming_scorer(
-        cls, chain: BaseLLMChain, prompt: str, dataset: DataSet
-    ) -> float:
-        return 0.0
+        cls,
+        chain: BaseLLMChain,
+        prompt: str,
+        pool: Sequence[str],
+        performance_pool: Sequence[PerformanceTuple],
+        dataset: DataSet,
+        distance_threshold: int = 2,
+    ) -> PerformanceTuple | None:
+        perf_vec, score = SEEPromptAugmenter.score(chain, prompt, dataset)
+        # can only check with lowest score candidate
+        min_dist = min(
+            np.count_nonzero(np.array(perf_vec) != np.array(p))
+            for p in performance_pool
+        )  # hamming distance
+        # Found similar candidate -> NOT use this prompt
+        return None if min_dist < distance_threshold else (perf_vec, score)
 
-    @classmethod
-    def _levenshtein_scorer(
-        cls, chain: BaseLLMChain, prompt: str, dataset: DataSet
-    ) -> float:
-        return 0.0
-
-    @classmethod
-    def _cosine_scorer(
-        cls, chain: BaseLLMChain, prompt: str, dataset: DataSet
-    ) -> float:
-        return 0.0
 
     # TODO: extend algorithm to multimodal data
     def lamarckian(self, pairs: DataSet, **kwargs) -> str:
@@ -452,20 +491,24 @@ mutated prompt:
 
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         P = []  # prompt pool
-        S = []  # corresponding scores
+        S = []  # corresponding performance scores on dev set
 
         # phase 0: global initialization
         # use lamarckian or sematic to diverse initial prompt
         if isinstance(self.init_data, str):
-            for _ in range(self.pool_size_0):
+            while len(P) < self.pool_size_0:
                 prompt = self.semantic(self.init_data)
-                P.append(prompt)
-                S.append(self._scorer(self.base_chain, prompt, self.dev_set))
+                perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+                if perf is not None:
+                    P.append(prompt)
+                    S.append(perf)
         else:
-            for _ in range(self.pool_size_0):
+            while len(P) < self.pool_size_0:
                 prompt = self.lamarckian(self.init_data)
-                P.append(prompt)
-                S.append(self._scorer(self.base_chain, prompt, self.dev_set))
+                perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+                if perf is not None:
+                    P.append(prompt)
+                    S.append(perf)
 
         # phase 1: local feedback operation
         # use feedback to generate new prompt
@@ -479,12 +522,12 @@ mutated prompt:
         while t < self.performance_gain_threshold or k <= self.tolerance_1:
             prompt = P[k]
             new_prompt = self.feedback(prompt)
-            score = self._scorer(self.base_chain, new_prompt, self.dev_set)
+            perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
             # Performance gain is defined as whether the new candidate has a higher performance than its parent
-            t = (score - S[k]) / S[k]
-            if score > S[k]:
+            if perf is not None and perf[1] > S[k][1]:
                 P[k] = new_prompt
-                S[k] = score
+                S[k] = perf
+                t = (perf[1] - S[k][1]) / S[k][1]
             k += 1
 
         # phase 2: global fusion operation
@@ -501,6 +544,10 @@ mutated prompt:
             # -> total tolerance for this phase is 2 * self.tolerance_2. Experiment in the paper chose 4 for each operator as default value
             new_prompt = self.eda(P_t)
             new_prompt = self.crossover(P_t)
+            # TODO: Add new prompt only when it does not have a similarity score
+            # over a threshold with any other candidate that is already in the subset.
+            # The subset will be randomized before
+            # feeding into the LLM agent so the candidate’s performance does not dictate its order.
 
             # Performance gain is defined as whether the average performance of the pool is improved
             # Note: we calculate the average score using highest score members and limited by the pool size
@@ -520,13 +567,12 @@ mutated prompt:
         while t < self.performance_gain_threshold or k <= self.tolerance_3:
             prompt = P[k]
             new_prompt = self.semantic(prompt)
-            score = self._scorer(self.base_chain, new_prompt, self.dev_set)
+            perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
             # Performance gain is defined as whether the new candidate has a higher performance than its parent
-            t = (score - S[k]) / S[k]
-            if score > S[k]:
+            if perf is not None and perf[1] > S[k][1]:
                 P[k] = new_prompt
-                S[k] = score
-
+                S[k] = perf
+                t = (perf[1] - S[k][1]) / S[k][1]
             k += 1
 
         max_score_index = np.argmax(S)
