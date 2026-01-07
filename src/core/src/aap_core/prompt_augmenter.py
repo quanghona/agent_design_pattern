@@ -332,6 +332,15 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return None if min_dist < distance_threshold else (perf_vec, score)
 
 
+    @classmethod
+    def _sort_pool(
+        cls, P_t: list[str], S_t: list[PerformanceTuple], pool_size: int
+    ) -> Tuple[List[str], List[PerformanceTuple]]:
+        sorted_indices = np.argsort(S_t)
+        P_t = [P_t[i] for i in sorted_indices]
+        S_t = sorted(S_t, reverse=True)
+        return P_t[:pool_size], S_t[:pool_size]
+
     # TODO: extend algorithm to multimodal data
     def lamarckian(self, pairs: DataSet, **kwargs) -> str:
         dataset = "\n\n".join(
@@ -512,38 +521,39 @@ mutated prompt:
 
         # phase 1: local feedback operation
         # use feedback to generate new prompt
-        sorted_indices = np.argsort(S)
-        P_t = [P[i] for i in sorted_indices]
-        S_t = sorted(S, reverse=True)
-        P_t = P_t[: self.pool_size_1]
-        S_t = S_t[: self.pool_size_1]
         t = 0
         k = 0
-        while t < self.performance_gain_threshold or k <= self.tolerance_1:
-            prompt = P[k]
-            new_prompt = self.feedback(prompt)
-            perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+        old_score = max([s[1] for s in S])
+        while t < self.performance_gain_threshold and k <= self.tolerance_1:
+            P_t = []
+            S_t = []
+            for prompt in P:
+                new_prompt = self.feedback(prompt)
+                new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+                if new_perf is not None:
+                    P_t.append(new_prompt)
+                    S_t.append(new_perf)
+
             # Performance gain is defined as whether the new candidate has a higher performance than its parent
-            if perf is not None and perf[1] > S[k][1]:
-                P[k] = new_prompt
-                S[k] = perf
-                t = (perf[1] - S[k][1]) / S[k][1]
+            P, S = SEEPromptAugmenter._sort_pool(
+                [*P, *P_t], [*S, *S_t], self.pool_size_1
+            )
+            new_score = max([s[1] for s in S])
+            t = (new_score - old_score) / old_score
             k += 1
 
         # phase 2: global fusion operation
         # use eda and crossover to fusion existing prompt and generate new prompt
-        sorted_indices = np.argsort(S)
-        P_t = [P[i] for i in sorted_indices]
-        S_t = sorted(S, reverse=True)
-        avg_score = np.mean(S)
-        t = 0  # last phase performance
+        t = 0
         k = 0
-        while t < self.performance_gain_threshold or k <= self.tolerance_2:
+        old_score = np.mean([s[1] for s in S])
+        while t < self.performance_gain_threshold and k <= self.tolerance_2:
             # TODO: choose 2 parents
-            # According to paper, each operator tolerance is self.tolerance_2
-            # -> total tolerance for this phase is 2 * self.tolerance_2. Experiment in the paper chose 4 for each operator as default value
-            new_prompt = self.eda(P_t)
-            new_prompt = self.crossover(P_t)
+            new_prompt = self.eda(P) if k % 2 else self.crossover(P)
+            new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+            if new_perf is not None:
+                P.append(new_prompt)
+                S.append(new_perf)
             # TODO: Add new prompt only when it does not have a similarity score
             # over a threshold with any other candidate that is already in the subset.
             # The subset will be randomized before
@@ -551,30 +561,33 @@ mutated prompt:
 
             # Performance gain is defined as whether the average performance of the pool is improved
             # Note: we calculate the average score using highest score members and limited by the pool size
-            sorted_indices = np.argsort(S)
-            P_t = [P[i] for i in sorted_indices][: self.pool_size_2]
-            S_t = sorted(S_t, reverse=True)[: self.pool_size_2]
-            new_avg_score = np.mean(S_t)
-            t = (new_avg_score - avg_score) / avg_score
+            P, S = SEEPromptAugmenter._sort_pool(P, S, self.pool_size_2)
+            new_score = np.mean([s[1] for s in S])
+            t = (new_score - old_score) / old_score
             k += 1
 
         # phase 3: local semantic operation
         # use semantic to generate new prompts
-        P_t = P_t[: self.pool_size_3]
-        S_t = S_t[: self.pool_size_3]
-        t = 0  # last phase performance
+        t = 0
         k = 0
-        while t < self.performance_gain_threshold or k <= self.tolerance_3:
-            prompt = P[k]
-            new_prompt = self.semantic(prompt)
-            perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+        old_score = max([s[1] for s in S])
+        while t < self.performance_gain_threshold and k <= self.tolerance_3:
+            P_t = []
+            S_t = []
+            for prompt in P:
+                new_prompt = self.semantic(prompt)
+                new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+                if new_perf is not None:
+                    P_t.append(new_prompt)
+                    S_t.append(new_perf)
+
             # Performance gain is defined as whether the new candidate has a higher performance than its parent
-            if perf is not None and perf[1] > S[k][1]:
-                P[k] = new_prompt
-                S[k] = perf
-                t = (perf[1] - S[k][1]) / S[k][1]
+            P, S = SEEPromptAugmenter._sort_pool(
+                [*P, *P_t], [*S, *S_t], self.pool_size_3
+            )
+            new_score = max([s[1] for s in S])
+            t = (new_score - old_score) / old_score
             k += 1
 
-        max_score_index = np.argmax(S)
-        message.query = P[max_score_index]
+        message.query = P[np.argmax([s[1] for s in S])]
         return message
