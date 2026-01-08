@@ -1,7 +1,6 @@
 import abc
 from collections.abc import Callable, Sequence
-import copy
-from typing import Concatenate, Dict, Literal, Tuple
+from typing import Concatenate, Dict, List, Literal, Tuple
 import warnings
 
 from aap_core.chain import BaseLLMChain
@@ -146,6 +145,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         ],
         PerformanceTuple | None,
     ] = PrivateAttr()
+    _dist_func: Callable[[Sequence[float], Sequence[float]], float] = PrivateAttr()
     _scorer_args: Dict = PrivateAttr()
 
     base_chain: BaseLLMChain = Field(
@@ -252,31 +252,36 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         description="Tolerance for phase 1: Local feedback, aka for feedback operator. This is marked as K_1 in the algorithm",
     )
     tolerance_2: int = Field(
-        default=1,
-        description="Tolerance for phase 2: Global fusion, aka for semantic operator. This is marked as K_2 in the algorithm",
+        default=8,
+        description="Tolerance for phase 2: Global fusion, aka for EDA and crossover operator. This is marked as K_2 in the algorithm",
     )
     tolerance_3: int = Field(
-        default=4,
-        description="Tolerance for phase 3: Local semantic, aka for EDA and crossover operator. This is marked as K_3 in the algorithm",
+        default=1,
+        description="Tolerance for phase 3: Local semantic, aka for semantic operator. This is marked as K_3 in the algorithm",
     )
     performance_gain_threshold: float = Field(
         default=0.01, description="Performance gain threshold"
     )
+    num_crossover_parents: int = Field(
+        default=2,
+        description="Number of parents to use for exploring operator such as EDA and Crossover",
+    )
+    num_eda_parents: int = Field(
+        default=-1,
+        description="Number of parents to use for exploring operator such as EDA and Crossover",
+    )
+    eda_with_index: bool = Field(
+        default=False,
+        description="Whether to rank candidates",
+    )
+    crossover_with_distinct: bool = Field(
+        default=False,
+        description="Whether to consider the diversity in parents",
+    )
 
     def __init__(
         self,
-        scorer: Callable[
-            Concatenate[
-                BaseLLMChain,
-                str,
-                Sequence[str],
-                Sequence[PerformanceTuple],
-                DataSet,
-                ...,
-            ],
-            PerformanceTuple | None,
-        ]
-        | Literal["hamming"] = "hamming",
+        scorer: Literal["hamming"] = "hamming",
         scorer_args: Dict = {},
         **kwargs,
     ):
@@ -287,12 +292,13 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         super().__init__(**kwargs)
         if scorer == "hamming":
             self._scorer = SEEPromptAugmenter._hamming_scorer
+            self._dist_func = SEEPromptAugmenter._hamming_distance
         # elif scorer == "levenshtein":
         #     self._scorer = SEEPromptAugmenter._levenshtein_scorer
         # elif scorer == "cosine":
         #     self._scorer = SEEPromptAugmenter._cosine_scorer
-        elif isinstance(scorer, Callable):
-            self._scorer = scorer
+        # elif isinstance(scorer, Callable):
+        #     self._scorer = scorer
         else:
             raise ValueError("scorer not supported")
         self._scorer_args = scorer_args
@@ -313,6 +319,10 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return performance_vector, sum(performance_vector) / len(performance_vector)
 
     @classmethod
+    def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> float:
+        return np.count_nonzero(np.array(v1) != np.array(v2))
+
+    @classmethod
     def _hamming_scorer(
         cls,
         chain: BaseLLMChain,
@@ -325,7 +335,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         perf_vec, score = SEEPromptAugmenter.score(chain, prompt, dataset)
         # can only check with lowest score candidate
         min_dist = min(
-            np.count_nonzero(np.array(perf_vec) != np.array(p))
+            SEEPromptAugmenter._hamming_distance(perf_vec, p[0])
             for p in performance_pool
         )  # hamming distance
         # Found similar candidate -> NOT use this prompt
@@ -368,8 +378,15 @@ The instruction was:
         return msg.responses[-1][1]
 
     def eda(self, candidates: Sequence[str], **kwargs) -> str:
-        # TODO: Choose parents from a list of prompts
-        cand_str = "\n\n".join(candidates)
+        num_parents = (
+            len(candidates)
+            if self.num_eda_parents < 0
+            else min(len(candidates), self.num_eda_parents)
+        )
+        parents = candidates[:num_parents]
+        if not self.eda_with_index:
+            np.random.shuffle(parents)
+        cand_str = "\n\n".join(parents)
         if self.eda_message is None:
             message = AgentMessage(
                 query="""You are a mutator. Given a series of prompts, your task is to generate another prompt
@@ -390,13 +407,76 @@ The newly mutated prompt is:""",
         message = self.eda_chain(message, **kwargs)
         return message.responses[-1][1]
 
-    def crossover(self, parents: Sequence[str], **kwargs) -> str:
-        # TODO: Choose parents from a list of prompts
-        chosen_parent = []
+    @classmethod
+    def max_vector_distance_subarray(
+        cls,
+        S: Sequence[Sequence[float]],
+        k: int,
+        dist_func: Callable[[Sequence[float], Sequence[float]], float],
+    ) -> Sequence[int]:
+        if k > len(S):
+            raise ValueError("k cannot be greater than the length of S.")
+        if k < 2:
+            return list(range(k))
+
+        # TODO: optmize this using numpy
+        # 1. Find the two points that are furthest apart to start our set
+        max_dist = -1
+        best_pair = (0, 1)
+
+        for i in range(len(S)):
+            for j in range(i + 1, len(S)):
+                d = dist_func(S[i], S[j])
+                if d > max_dist:
+                    max_dist = d
+                    best_pair = (i, j)
+
+        selected_indices = [best_pair[0], best_pair[1]]
+
+        # 2. Greedily add points until we reach size k
+        while len(selected_indices) < k:
+            best_next_idx = -1
+            max_total_extra_dist = -1
+
+            for i in range(len(S)):
+                if i in selected_indices:
+                    continue
+
+                # Calculate how much this point adds to the total pairwise distance
+                current_extra_dist = sum(
+                    dist_func(S[i], S[idx]) for idx in selected_indices
+                )
+
+                if current_extra_dist > max_total_extra_dist:
+                    max_total_extra_dist = current_extra_dist
+                    best_next_idx = i
+
+            selected_indices.append(best_next_idx)
+
+        return selected_indices
+
+    def crossover(
+        self, P: Sequence[str], S: Sequence[PerformanceTuple], **kwargs
+    ) -> str:
+        num_parents = (
+            len(P)
+            if self.num_crossover_parents < 0
+            else min(len(P), self.num_crossover_parents)
+        )
+
+        if self.crossover_with_distinct:
+            indices = SEEPromptAugmenter.max_vector_distance_subarray(
+                [s[0] for s in S], num_parents, self._dist_func
+            )
+            parents = [P[i] for i in indices]
+        else:
+            # Choose the best parents
+            parents = P[:num_parents]
+
+        np.random.shuffle(parents)
         parent_prompt = ""
         for parent in parents:
-            chosen_parent.append(parent)
-            parent_prompt += f"Parent prompt {len(chosen_parent)}: {parent}\n"
+            parent_prompt += f"Parent prompt {len(parents)}: {parent}\n"
         if self.crossover_message is None:
             message = AgentMessage(
                 query="""You are a mutator who is familiar with the concept of cross-over in genetic algorithm,
@@ -507,14 +587,18 @@ mutated prompt:
         if isinstance(self.init_data, str):
             while len(P) < self.pool_size_0:
                 prompt = self.semantic(self.init_data)
-                perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+                perf = self._scorer(
+                    self.base_chain, prompt, P, S, self.dev_set, **self._scorer_args
+                )
                 if perf is not None:
                     P.append(prompt)
                     S.append(perf)
         else:
             while len(P) < self.pool_size_0:
                 prompt = self.lamarckian(self.init_data)
-                perf = self._scorer(self.base_chain, prompt, P, S, self.dev_set)
+                perf = self._scorer(
+                    self.base_chain, prompt, P, S, self.dev_set, **self._scorer_args
+                )
                 if perf is not None:
                     P.append(prompt)
                     S.append(perf)
@@ -529,7 +613,9 @@ mutated prompt:
             S_t = []
             for prompt in P:
                 new_prompt = self.feedback(prompt)
-                new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+                new_perf = self._scorer(
+                    self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
+                )
                 if new_perf is not None:
                     P_t.append(new_prompt)
                     S_t.append(new_perf)
@@ -549,15 +635,13 @@ mutated prompt:
         old_score = np.mean([s[1] for s in S])
         while t < self.performance_gain_threshold and k <= self.tolerance_2:
             # TODO: choose 2 parents
-            new_prompt = self.eda(P) if k % 2 else self.crossover(P)
-            new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+            new_prompt = self.eda(P) if k % 2 else self.crossover(P, S)
+            new_perf = self._scorer(
+                self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
+            )
             if new_perf is not None:
                 P.append(new_prompt)
                 S.append(new_perf)
-            # TODO: Add new prompt only when it does not have a similarity score
-            # over a threshold with any other candidate that is already in the subset.
-            # The subset will be randomized before
-            # feeding into the LLM agent so the candidate’s performance does not dictate its order.
 
             # Performance gain is defined as whether the average performance of the pool is improved
             # Note: we calculate the average score using highest score members and limited by the pool size
@@ -576,7 +660,9 @@ mutated prompt:
             S_t = []
             for prompt in P:
                 new_prompt = self.semantic(prompt)
-                new_perf = self._scorer(self.base_chain, new_prompt, P, S, self.dev_set)
+                new_perf = self._scorer(
+                    self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
+                )
                 if new_perf is not None:
                     P_t.append(new_prompt)
                     S_t.append(new_perf)
