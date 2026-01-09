@@ -431,9 +431,10 @@ The instruction was:
             if self.num_eda_parents < 0
             else min(len(candidates), self.num_eda_parents)
         )
-        parents = candidates[:num_parents]
-        if not self.eda_with_index:
-            np.random.shuffle(parents)
+        indices = np.random.choice(len(candidates), num_parents, replace=False)
+        if self.eda_with_index:
+            indices = np.sort(indices)
+        parents = [candidates[i] for i in list(map(int, indices))]
         cand_str = "\n\n".join(parents)
         if self.eda_message is None:
             message = AgentMessage(
@@ -467,21 +468,9 @@ The newly mutated prompt is:""",
         if k < 2:
             return list(range(k))
 
-        # TODO: optimize this using numpy
-        # 1. Find the two points that are furthest apart to start our set
-        max_dist = -1
-        best_pair = (0, 1)
+        selected_indices = [int(np.random.randint(0, len(S)))]
 
-        for i in range(len(S)):
-            for j in range(i + 1, len(S)):
-                d = dist_func(S[i], S[j])
-                if d > max_dist:
-                    max_dist = d
-                    best_pair = (i, j)
-
-        selected_indices = [best_pair[0], best_pair[1]]
-
-        # 2. Greedily add points until we reach size k
+        # Greedily add points until we reach size k
         while len(selected_indices) < k:
             best_next_idx = -1
             max_total_extra_dist = -1
