@@ -294,6 +294,11 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         default=False,
         description="Whether to consider the diversity in parents",
     )
+    num_feedback_wrongcases: int = Field(
+        default=3,
+        description="Number of wrong cases to include in the prompt for feedback operator",
+        gt=0,
+    )
 
     def __init__(
         self,
@@ -594,13 +599,13 @@ Offspring prompt:
         Returns:
             str: the generated prompt
         """
-        # TODO: we could limit the size of the wrong cases
         perf_vec, _ = performance
         wrong_cases = []
         for i, d in enumerate(self.dev_set):
             if perf_vec[i] == 0:
                 wrong_cases.append(d[0])
-
+                if len(wrong_cases) >= self.num_feedback_wrongcases:
+                    break
         wrong_cases = "\n".join(wrong_cases)
 
         if self.examiner_message is None:
