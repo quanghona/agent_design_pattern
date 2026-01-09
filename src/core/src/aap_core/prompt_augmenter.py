@@ -504,8 +504,16 @@ Offspring prompt:
         message = self.crossover_chain(message, **kwargs)
         return message.responses[-1][1]
 
-    def feedback(self, candidate: str, **kwargs) -> str:
-        # TODO: put wrong cases to prompt
+    def feedback(self, candidate: str, performance: PerformanceTuple, **kwargs) -> str:
+        # TODO: we could limit the size of the wrong cases
+        perf_vec, _ = performance
+        wrong_cases = []
+        for i, d in enumerate(self.dev_set):
+            if perf_vec[i] == 0:
+                wrong_cases.append(d[0])
+
+        wrong_cases = "\n".join(wrong_cases)
+
         if self.examiner_message is None:
             message = AgentMessage(
                 query="""You are a quick improver. Given an existing prompt and a series of cases where it
@@ -519,15 +527,15 @@ on the mistakes.
 ways to improve the existing prompt based on observations of the mistakes in the
 cases above are:
 """,
-                context={"candidate": candidate, "wrong_cases": ""},
+                context={"candidate": candidate, "wrong_cases": wrong_cases},
             )
         else:
             message = self.examiner_message
             if message.context is None:
-                message.context = {"candidate": candidate, "wrong_cases": ""}
+                message.context = {"candidate": candidate, "wrong_cases": wrong_cases}
             else:
                 message.context["candidate"] = candidate
-                message.context["wrong_cases"] = ""
+                message.context["wrong_cases"] = wrong_cases
         message = self.examiner_chain(message, **kwargs)
 
         feedback_msg = message.responses[-1][1]
@@ -611,8 +619,8 @@ mutated prompt:
         while t < self.performance_gain_threshold and k <= self.tolerance_1:
             P_t = []
             S_t = []
-            for prompt in P:
-                new_prompt = self.feedback(prompt)
+            for prompt, s in zip(P, S):
+                new_prompt = self.feedback(prompt, s)
                 new_perf = self._scorer(
                     self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
                 )
