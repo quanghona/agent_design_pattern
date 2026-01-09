@@ -117,7 +117,7 @@ class GEPAPromptAugmenter(BasePromptAugmenter):
 
 
 class SEEPromptAugmenter(BasePromptAugmenter):
-    """SEE: Strategic Exploration and Exploitation for Cohesive In-Context Prompt Optimization
+    """# SEE: Strategic Exploration and Exploitation for Cohesive In-Context Prompt Optimization
     https://arxiv.org/abs/2402.11347
 
     SEE uses LLM operators to perform generation and variation. There are 5 operators introduced in the work:
@@ -133,8 +133,22 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     - Phase 2: Global fusion operation
     - Phase 3: Local semantic operation
 
+    Regarding prompts for operators, we have 3 ways to distribute prompt into user prompt and system prompt:
+    - Put all prompt content in the system prompt template and user prompt is empty
+    - The system prompt is the fixed instruction, and the template and examples are in the user prompt. This is the recommended implementation
+
+    To maximize the effect of operators, we should adjust the temperature of LLM accordingly.
+    Push the temperature higher for exploring phases (0 and 2), 3 global operators: Lamarckian, EDA, Crossover.
+    Lower the temperature for exploiting phases (1 and 3), 2 local operators: Feedback, Semantic.
+    The adjustment stays inside the logic of the chains, which is outside of this SEE class
+
+    Note that we could use the same or different LLMs for different operators and the baseline.
+
     As stated in the paper, SEE needs multiple iterations and relatively large amount of API call, which might be inefficient for large-scale production.
     So this is only for experimental use.
+
+    Following our framework, in the prompt template, the keyword need to be prefix with 'context.' and the additional
+    data need to store in 'context' field of the AgentMessage object
     """
 
     DataSet = Sequence[Tuple[str, str]]
@@ -264,11 +278,13 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     )
     num_crossover_parents: int = Field(
         default=2,
-        description="Number of parents to use for exploring operator such as EDA and Crossover",
+        description="""Number of parents to use for exploring operator such as EDA and Crossover.
+        Setting value to -1 will use all candidates in the prompt pool.""",
     )
     num_eda_parents: int = Field(
         default=-1,
-        description="Number of parents to use for exploring operator such as EDA and Crossover",
+        description="""Number of parents to use for exploring operator such as EDA and Crossover
+        Setting value to -1 will use all candidates in the prompt pool.""",
     )
     eda_with_index: bool = Field(
         default=False,
@@ -353,6 +369,18 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     # TODO: extend algorithm to multimodal data
     def lamarckian(self, pairs: DataSet, **kwargs) -> str:
+        """
+        Generate new prompt using Lamarckian operator
+        This method works with corresponding lamarckian_message and lamarckian_chain attributes.
+        In the prompt in lamarckian_message, it must contains key 'context.pairs' to fetch data from provided dataset.
+
+        Args:
+            pairs (DataSet): input-output pairs of the data
+            **kwargs: arguments for lamarckian chain
+
+        Returns:
+            str: the generated prompt
+        """
         dataset = "\n\n".join(
             [f"Input: {pair[0]}\nOutput: {pair[1]}" for pair in pairs]
         )
@@ -378,6 +406,21 @@ The instruction was:
         return msg.responses[-1][1]
 
     def eda(self, candidates: Sequence[str], **kwargs) -> str:
+        """
+        Generate new prompt using EDA operator
+        This method works with corresponding eda_message and eda_chain attributes.
+
+        In the prompt in eda_message, it must contains key 'context.candidates' to fetch candidates.
+        We can control number of candidates by setting num_eda_parents.
+        If we not apply indexing, the candiadates will be shuffled before fetch into prompt message
+
+        Args:
+            candidates (Sequence[str]): list of candidate prompts
+            **kwargs: arguments for eda chain
+
+        Returns:
+            str: the generated prompt
+        """
         num_parents = (
             len(candidates)
             if self.num_eda_parents < 0
@@ -419,7 +462,7 @@ The newly mutated prompt is:""",
         if k < 2:
             return list(range(k))
 
-        # TODO: optmize this using numpy
+        # TODO: optimize this using numpy
         # 1. Find the two points that are furthest apart to start our set
         max_dist = -1
         best_pair = (0, 1)
@@ -458,6 +501,42 @@ The newly mutated prompt is:""",
     def crossover(
         self, P: Sequence[str], S: Sequence[PerformanceTuple], **kwargs
     ) -> str:
+        """
+        Generate new prompt using Crossover mutation
+        This method works with corresponding crossover_message and crossover_chain attributes.
+
+        In the prompt in crossover_message, it must contains key 'context.parents' to fetch parents.
+        We can control number of parents by setting num_crossover_parents.
+
+        In the original work, the operator only accepts 2 parents. We generalize it
+        to accept any number of parents. If diversity is not considered, we choose the best k parents.
+        Otherwise we formulate the problem as below:
+
+        Given a set of n parents P with its corresponding performance S, a target number of selected parents k.
+        Find a subset of k parents that maximize the total pairwise distance between performance vector of selected parents.
+
+        Hence, the definition 4 (Crossover Operator - CR) in the paper is generalized:
+        Crossover generates a new candidate based on k parents. It is a function
+        operator O_C that perform O_C(P_k, L) = p' where P_k is a subset of P,
+        p' is the generated prompt that hopefully hold features from prompts in P_k.
+        If P_k is chosen from P so that it maximizes \sum_{i < j}^{P_k}d(p_i, p_j), we call it Crossover + Distinct (CR+D)
+
+        If k = 2, it fallbacks to the original work
+        We gather P_k by greedily adding points until we reach size k. First we
+        find 2 initial points that have the largest distance among all pairs.
+        Then for the rest points, we iteratively find the point that have max distance
+        with the current set. The implementation of the algorithm is in `max_vector_distance_subarray` method
+
+        Selected parents will be shuffled before fetch into prompt message
+
+        Args:
+            P (Sequence[str]): input prompts
+            S (Sequence[PerformanceTuple]): corresponding performance vectors.
+            **kwargs: arguments for crossover chain
+
+        Returns:
+            str: the generated prompt
+        """
         num_parents = (
             len(P)
             if self.num_crossover_parents < 0
@@ -505,6 +584,16 @@ Offspring prompt:
         return message.responses[-1][1]
 
     def feedback(self, candidate: str, performance: PerformanceTuple, **kwargs) -> str:
+        """
+        Generate an improved version of the prompt based on the feedback from the examiner.
+
+        Args:
+            candidate (str): the original prompt
+            **kwargs: arguments for Examiner and Improver chains
+
+        Returns:
+            str: the generated prompt
+        """
         # TODO: we could limit the size of the wrong cases
         perf_vec, _ = performance
         wrong_cases = []
@@ -561,6 +650,19 @@ improve. Create an improved version based on the feedback.
         return message.responses[-1][1]
 
     def semantic(self, candidate: str, **kwargs) -> str:
+        """
+        Generate another prompt with the same semantic meaning and intentions.
+
+        This method works with corresponding semantic_message and semantic_chain attributes.
+        In the prompt in semantic_message, it must contain  key 'context.candidate' to parse with the candidate input.
+
+        Args:
+            candidate (str): the original prompt
+            **kwargs: arguments for semantic chains
+
+        Returns:
+            str: the generated prompt
+        """
         if self.semantic_message is None:
             message = AgentMessage(
                 query="""You are a mutator. Given a prompt, your task is to generate another prompt with the
