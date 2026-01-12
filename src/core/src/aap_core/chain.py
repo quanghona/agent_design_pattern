@@ -2,8 +2,7 @@ import abc
 from collections.abc import Sequence
 from typing import Callable, Generic, List, Tuple
 
-from aap_core.prompt_augmenter import BaseRetriever
-from pydantic import Field, PrivateAttr, field_validator
+from pydantic import Field, PrivateAttr
 
 from .guardrail import BaseGuardRail, PassGuardRail
 from .prompt_augmenter import (
@@ -140,10 +139,6 @@ class MetaPromptAugmenter(BasePromptAugmenter):
 
     chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
 
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         message = self.chain.invoke(message, **kwargs)
-        if message.execution_result != "success":
-            return message
-        _, message.query = message.responses[-1]
-        message.responses = []
         return message
