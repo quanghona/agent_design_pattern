@@ -120,6 +120,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     """# SEE: Strategic Exploration and Exploitation for Cohesive In-Context Prompt Optimization
     https://arxiv.org/abs/2402.11347
 
+    This is a self implementation that adapt to ours aap framework with additional extensions.
+    The logic may not be identical to the original work.
+
     SEE uses LLM operators to perform generation and variation. There are 5 operators introduced in the work:
     - Lamarckian: reverse engineering by generating prompt from a set of input-output pairs
     - EDA (Estimation of Distribution): takes in a group of candidates and otuputs a new candidat by studying the input group.
@@ -136,6 +139,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     Regarding prompts for operators, we have 3 ways to distribute prompt into user prompt and system prompt:
     - Put all prompt content in the system prompt template and user prompt is empty
     - The system prompt is the fixed instruction, and the template and examples are in the user prompt. This is the recommended implementation
+    - The system prompt is empty and all the prompt content stay in the user prompt. This approach has highest flexibility but only suitable for development
 
     To maximize the effect of operators, we should adjust the temperature of LLM accordingly.
     Push the temperature higher for exploring phases (0 and 2), 3 global operators: Lamarckian, EDA, Crossover.
@@ -153,6 +157,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     DataSet = Sequence[Tuple[str, str]]
     PerformanceTuple = Tuple[Sequence[float], float]
+
     _scorer: Callable[
         Concatenate[
             BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...
@@ -247,19 +252,19 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     pool_size_0: int = Field(
         default=15,
-        description="Pool size of phase 0: Global initialization. Mark as n_0 in the algorithm",
+        description="Pool size of phase 0: Global initialization. Marked as n_0 in the algorithm",
     )
     pool_size_1: int = Field(
         default=5,
-        description="Pool size of phase 1: Local feedback. Mark as n_1 in the algorithm",
+        description="Pool size of phase 1: Local feedback. Marked as n_1 in the algorithm",
     )
     pool_size_2: int = Field(
         default=5,
-        description="Pool size of phase 2: Global fusion. Mark as n_2 in the algorithm",
+        description="Pool size of phase 2: Global fusion. Marked as n_2 in the algorithm",
     )
     pool_size_3: int = Field(
         default=5,
-        description="Pool size of phase 3: Local semantic. Mark as n_3 in the algorithm",
+        description="Pool size of phase 3: Local semantic. Marked as n_3 in the algorithm",
     )
     tolerance_1: int = Field(
         default=1,
@@ -267,14 +272,15 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     )
     tolerance_2: int = Field(
         default=8,
-        description="Tolerance for phase 2: Global fusion, aka for EDA and crossover operator. This is marked as K_2 in the algorithm",
+        description="""Tolerance for phase 2: Global fusion, aka for EDA and crossover operator. This is marked as K_2 in the algorithm.
+        Note that this is tolerance for whose phase, which is total tolerance for 2 operators""",
     )
     tolerance_3: int = Field(
         default=1,
         description="Tolerance for phase 3: Local semantic, aka for semantic operator. This is marked as K_3 in the algorithm",
     )
     performance_gain_threshold: float = Field(
-        default=0.01, description="Performance gain threshold"
+        default=0.01, description="Performance gain threshold. In percent scale"
     )
     num_crossover_parents: int = Field(
         default=2,
@@ -738,7 +744,6 @@ mutated prompt:
         k = 0
         old_score = np.mean([s[1] for s in S])
         while t < self.performance_gain_threshold and k <= self.tolerance_2:
-            # TODO: choose 2 parents
             new_prompt = self.eda(P) if k % 2 else self.crossover(P, S)
             new_perf = self._scorer(
                 self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
