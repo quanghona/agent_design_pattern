@@ -309,7 +309,19 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     def __init__(
         self,
-        scorer: Literal["hamming"] = "hamming",
+        scorer: Literal["hamming"]
+        | Callable[
+            Concatenate[
+                BaseLLMChain,
+                str,
+                Sequence[str],
+                Sequence[PerformanceTuple],
+                DataSet,
+                ...,
+            ],
+            PerformanceTuple | None,
+        ] = "hamming",
+        dist_func: Callable[[Sequence[float], Sequence[float]], float] | None = None,
         scorer_args: Dict = {},
         eval_method: Literal["exact", "include"] | Callable[[str, str], bool] = "exact",
         **kwargs,
@@ -326,8 +338,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         #     self._scorer = SEEPromptAugmenter._levenshtein_scorer
         # elif scorer == "cosine":
         #     self._scorer = SEEPromptAugmenter._cosine_scorer
-        # elif isinstance(scorer, Callable):
-        #     self._scorer = scorer
+        elif isinstance(scorer, Callable) and dist_func is not None:
+            self._scorer = scorer
+            self._dist_func = dist_func
         else:
             raise ValueError("scorer not supported")
         self._scorer_args = scorer_args
