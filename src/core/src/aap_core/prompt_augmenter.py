@@ -166,6 +166,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     ] = PrivateAttr()
     _dist_func: Callable[[Sequence[float], Sequence[float]], float] = PrivateAttr()
     _scorer_args: Dict = PrivateAttr()
+    _eval_method: Callable[[str, str], bool] = PrivateAttr()
 
     base_chain: BaseLLMChain = Field(
         ..., description="The base LLM chain used by SEE to generate result"
@@ -310,6 +311,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         self,
         scorer: Literal["hamming"] = "hamming",
         scorer_args: Dict = {},
+        eval_method: Literal["exact", "include"] | Callable[[str, str], bool] = "exact",
         **kwargs,
     ):
         warnings.warn(
@@ -318,7 +320,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
         super().__init__(**kwargs)
         if scorer == "hamming":
-            self._scorer = SEEPromptAugmenter._hamming_scorer
+            self._scorer = self._hamming_scorer
             self._dist_func = SEEPromptAugmenter._hamming_distance
         # elif scorer == "levenshtein":
         #     self._scorer = SEEPromptAugmenter._levenshtein_scorer
@@ -330,9 +332,19 @@ class SEEPromptAugmenter(BasePromptAugmenter):
             raise ValueError("scorer not supported")
         self._scorer_args = scorer_args
 
-    @classmethod
+        if eval_method == "exact":
+            self._eval_method = lambda x, y: x == y
+        elif eval_method == "include":
+            self._eval_method = lambda x, y: x in y
+        elif isinstance(eval_method, Callable):
+            self._eval_method = eval_method
+        else:
+            raise ValueError("eval_method not supported")
+
     def score(
-        cls, chain: BaseLLMChain, prompt: str, dataset: DataSet
+        self,
+        prompt: str,
+        dataset: DataSet,
     ) -> PerformanceTuple:
         performance_vector = []
         for data in dataset:
@@ -340,18 +352,18 @@ class SEEPromptAugmenter(BasePromptAugmenter):
             Question:
             {data[0]}
             Answer:"""
-            message = chain.invoke(AgentMessage(query=query))
-            # TODO: diverse options for selecting comparasion method
-            performance_vector.append(message.responses[-1][1] == data[1])
+            message = self.base_chain.invoke(AgentMessage(query=query))
+            performance_vector.append(
+                int(self._eval_method(data[1], message.responses[-1][1]))
+            )
         return performance_vector, sum(performance_vector) / len(performance_vector)
 
     @classmethod
     def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> float:
         return np.count_nonzero(np.array(v1) != np.array(v2))
 
-    @classmethod
     def _hamming_scorer(
-        cls,
+        self,
         chain: BaseLLMChain,
         prompt: str,
         pool: Sequence[str],
@@ -359,7 +371,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         dataset: DataSet,
         distance_threshold: int = 2,
     ) -> PerformanceTuple | None:
-        perf_vec, score = SEEPromptAugmenter.score(chain, prompt, dataset)
+        perf_vec, score = self.score(prompt, dataset)
         # can only check with lowest score candidate
         min_dist = min(
             SEEPromptAugmenter._hamming_distance(perf_vec, p[0])
@@ -597,7 +609,7 @@ Offspring prompt:
         perf_vec, _ = performance
         wrong_cases = []
         for i, d in enumerate(self.dev_set):
-            if perf_vec[i] == 0:
+            if perf_vec[i] < 0.5:
                 wrong_cases.append(d[0])
                 if len(wrong_cases) >= self.num_feedback_wrongcases:
                     break
@@ -611,7 +623,7 @@ mistakes. Based on these observations, output ways to improve the prompts based
 on the mistakes.
 ## Existing Prompt ##
 {context.candidate}
-## Cases where it gets wrong:##
+## Cases where it gets wrong: ##
 {context.wrong_cases}
 ways to improve the existing prompt based on observations of the mistakes in the
 cases above are:
