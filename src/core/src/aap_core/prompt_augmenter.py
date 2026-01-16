@@ -72,6 +72,7 @@ class SimplePromptAugmenter(BasePromptAugmenter):
     using provided format.
 
     This augmenter mainly used for simple scenarios such as tabular data concatenation or naive RAG.
+    In other word, this naturally suitables for data augmenter type.
     """
 
     format: str = Field(
@@ -306,6 +307,17 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         description="Number of wrong cases to include in the prompt for feedback operator",
         gt=0,
     )
+    eda_parent_selection: Literal["wheel", "random", "tournament"] = Field(
+        default="random",
+        description="Parent selection strategy for EDA operator",
+    )
+    crossover_parent_selection: Literal["wheel", "random", "tournament"] = Field(
+        default="random",
+        description="""Parent selection strategy for crossover operator.
+        This strategy applies when crossover_with_distinct is True.
+        The method will select 1 parent initially and the rest is selected by maximizing the total distance between parents
+        """,
+    )
 
     def __init__(
         self,
@@ -350,6 +362,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         elif eval_method == "include":
             self._eval_method = lambda x, y: x in y
         elif isinstance(eval_method, Callable):
+            # various methods can be tried like bleuscore, rouge, BERTscore, CTC, LLM-as-a-judge, etc
             self._eval_method = eval_method
         else:
             raise ValueError("eval_method not supported")
@@ -403,6 +416,46 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         S_t = sorted(S_t, reverse=True)
         return P_t[:pool_size], S_t[:pool_size]
 
+    @classmethod
+    def _selection_random(
+        cls, num_parents: int, S: Sequence[PerformanceTuple]
+    ) -> List[int]:
+        return list(np.random.choice(len(S), num_parents, replace=False))
+
+    @classmethod
+    def _selection_wheel(
+        cls, num_parents: int, S: Sequence[PerformanceTuple]
+    ) -> List[int]:
+        total_score = sum([s[1] for s in S])
+        probabilities = [s[1] / total_score for s in S]
+        parents = []
+        while len(parents) < num_parents:
+            cumulative_probabilities = [
+                sum(probabilities[: i + 1]) for i in range(len(probabilities))
+            ]
+            random_value = np.random.uniform(0, 1)
+            parent_index = next(
+                i
+                for i, value in enumerate(cumulative_probabilities)
+                if value >= random_value
+            )
+            if parent_index not in parents:
+                parents.append(parent_index)
+        return parents
+
+    @classmethod
+    def _selection_tournament(
+        cls, num_parents: int, S: Sequence[PerformanceTuple]
+    ) -> List[int]:
+        parents = []
+        while len(parents) < num_parents:
+            parent_indices = np.random.choice(len(S), 2)
+            parent_index = np.argmax([S[i][1] for i in parent_indices])
+            selected = parent_indices[parent_index]
+            if selected not in parents:
+                parents.append(selected)
+        return parents
+
     # TODO: extend algorithm to multimodal data
     def lamarckian(self, pairs: DataSet, **kwargs) -> str:
         """
@@ -441,7 +494,9 @@ The instruction was:
         msg = self.lamarckian_chain.invoke(message, **kwargs)
         return msg.responses[-1][1]
 
-    def eda(self, candidates: Sequence[str], **kwargs) -> str:
+    def eda(
+        self, candidates: Sequence[str], S: Sequence[PerformanceTuple], **kwargs
+    ) -> str:
         """
         Generate new prompt using EDA operator
         This method works with corresponding eda_message and eda_chain attributes.
@@ -462,7 +517,12 @@ The instruction was:
             if self.num_eda_parents < 0
             else min(len(candidates), self.num_eda_parents)
         )
-        indices = np.random.choice(len(candidates), num_parents, replace=False)
+        selection_dict = {
+            "random": SEEPromptAugmenter._selection_random,
+            "tournament": SEEPromptAugmenter._selection_tournament,
+            "wheel": SEEPromptAugmenter._selection_wheel,
+        }
+        indices = selection_dict[self.eda_parent_selection](num_parents, S)
         if self.eda_with_index:
             indices = np.sort(indices)
         parents = [candidates[i] for i in list(map(int, indices))]
@@ -490,16 +550,22 @@ The newly mutated prompt is:""",
     @classmethod
     def max_vector_distance_subarray(
         cls,
-        S: Sequence[Sequence[float]],
+        S: Sequence[PerformanceTuple],
         k: int,
         dist_func: Callable[[Sequence[float], Sequence[float]], float],
+        selection_method: Literal["tournament", "wheel", "random"] = "random",
     ) -> Sequence[int]:
         if k > len(S):
             raise ValueError("k cannot be greater than the length of S.")
         if k < 2:
             return list(range(k))
 
-        selected_indices = [int(np.random.randint(0, len(S)))]
+        selection_dict = {
+            "random": SEEPromptAugmenter._selection_random,
+            "tournament": SEEPromptAugmenter._selection_tournament,
+            "wheel": SEEPromptAugmenter._selection_wheel,
+        }
+        selected_indices = selection_dict[selection_method](1, S)
 
         # Greedily add points until we reach size k
         while len(selected_indices) < k:
@@ -512,7 +578,7 @@ The newly mutated prompt is:""",
 
                 # Calculate how much this point adds to the total pairwise distance
                 current_extra_dist = sum(
-                    dist_func(S[i], S[idx]) for idx in selected_indices
+                    dist_func(S[i][0], S[idx][0]) for idx in selected_indices
                 )
 
                 if current_extra_dist > max_total_extra_dist:
@@ -570,7 +636,7 @@ The newly mutated prompt is:""",
 
         if self.crossover_with_distinct:
             indices = SEEPromptAugmenter.max_vector_distance_subarray(
-                [s[0] for s in S], num_parents, self._dist_func
+                S, num_parents, self._dist_func, self.crossover_parent_selection
             )
             parents = [P[i] for i in indices]
         else:
@@ -769,7 +835,7 @@ mutated prompt:
         k = 0
         old_score = np.mean([s[1] for s in S])
         while t < self.performance_gain_threshold and k <= self.tolerance_2:
-            new_prompt = self.eda(P) if k % 2 else self.crossover(P, S)
+            new_prompt = self.eda(P, S) if k % 2 else self.crossover(P, S)
             new_perf = self._scorer(
                 self.base_chain, new_prompt, P, S, self.dev_set, **self._scorer_args
             )
