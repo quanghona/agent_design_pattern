@@ -4,6 +4,7 @@ version = "0.1.2.dev1"
 description = "DsPy integration of agent design pattern"
 readme = "README.md"
 license = { text = "MIT" }
+keywords = ["agent", "ai", "pattern", "llm", "dspy"]
 authors = [
     { name = "Ly Hon Quang", email = "lyhonquang@gmail.com" }
 ]
@@ -29,6 +30,8 @@ Repository = "https://github.com/quanghona/agent_design_pattern.git"
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
+    "sentence-transformers>=5.2.0",
+    "torch",
 ]
 lint = [
     "ruff==0.14.0",
@@ -37,3 +40,8 @@ lint = [
 [build-system]
 requires = ["uv_build>=0.8.14,<0.9.0"]
 build-backend = "uv_build"
+
+[project.optional-dependencies]
+weaviate = [
+    "weaviate"
+]

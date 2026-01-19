@@ -7,6 +7,7 @@ authors = [
     { name = "Ly Hon Quang", email = "lyhonquang@gmail.com" }
 ]
 license = { text = "MIT" }
+keywords = ["agent", "ai", "pattern", "llm", "transformers"]
 requires-python = ">=3.10.12"
 dependencies = [
     "aap_core>=0.1.0",
@@ -36,4 +37,9 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
+]
+
+[project.optional-dependencies]
+weaviate = [
+    "weaviate"
 ]
