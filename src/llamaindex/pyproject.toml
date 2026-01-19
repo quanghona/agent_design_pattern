@@ -1,6 +1,6 @@
 [project]
 name = "aap_llamaindex"
-version = "0.1.1.dev1"
+version = "0.1.2.dev1"
 description = "LlamaIndex integration of agent design pattern"
 readme = "README.md"
 authors = [
@@ -26,7 +26,6 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/quanghona/agent_design_pattern.git"
-
 
 [build-system]
 requires = ["uv_build>=0.8.14,<0.9.0"]

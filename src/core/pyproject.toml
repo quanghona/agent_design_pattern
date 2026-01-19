@@ -1,6 +1,6 @@
 [project]
 name = "aap_core"
-version = "0.1.1.dev1"
+version = "0.1.3.dev1"
 description = "Agent design pattern core framework"
 readme = "README.md"
 license = { text = "MIT" }
