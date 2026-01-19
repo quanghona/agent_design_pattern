@@ -36,6 +36,8 @@ build-backend = "uv_build"
 dev = [
     "llama-index-llms-ollama>=0.9.0",
     "ipykernel",
+    "torch",
+    "llama-index-embeddings-huggingface>=0.6.1",
 ]
 
 [project.optional-dependencies]

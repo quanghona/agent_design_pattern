@@ -1,11 +1,12 @@
 from aap_core.retriever import BaseRetriever
 from aap_core.types import AgentMessage
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from dspy import Retrieve, Embeddings
 
 
 class RetrieverAdapter(BaseRetriever):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     retriever: Retrieve | Embeddings = Field(
         ..., description="The dspy's retriever to use"
     )
@@ -20,7 +21,7 @@ class RetrieverAdapter(BaseRetriever):
             raise ValueError("data_key must start with 'context.'")
         return v
 
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+    def retrieve(self, message: AgentMessage, **kwargs) -> AgentMessage:
         if isinstance(self.retriever, Embeddings):
             results = self.retriever(message.query).passages
         else:
@@ -31,8 +32,9 @@ class RetrieverAdapter(BaseRetriever):
             data.append(result)
 
         data_key = self.data_key.replace("context.", "")
+        content = " ".join(data) if len(data) > 1 else data
         if message.context is None:
-            message.context = {data_key: data}
+            message.context = {data_key: content}
         else:
-            message.context[data_key] = data
+            message.context[data_key] = content
         return message

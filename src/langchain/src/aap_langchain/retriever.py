@@ -1,6 +1,3 @@
-from collections.abc import Callable
-from typing import List
-
 from aap_core.retriever import BaseRetriever
 from aap_core.types import AgentMessage
 from langchain_core.retrievers import BaseRetriever as LangChainBaseRetriever
@@ -22,7 +19,7 @@ class RetrieverAdapter(BaseRetriever):
             raise ValueError("data_key must start with 'context.'")
         return v
 
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+    def retrieve(self, message: AgentMessage, **kwargs) -> AgentMessage:
         docs = self.retriever.invoke(message.query)
         data = []
         # TODO: aware for multimodal data in the future

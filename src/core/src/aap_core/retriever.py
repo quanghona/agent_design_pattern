@@ -1,6 +1,7 @@
 import abc
 import json
 from collections.abc import Iterable
+import os
 
 import pandas as pd
 import tabulate
@@ -84,7 +85,7 @@ class DataFrameRetriever(BaseRetriever):
     @classmethod
     def from_string(cls, data: str, data_key: str = "context.data"):
         """
-        Parse a string into a format that can be used by the prompt enhancer.
+        Parse a string into a string.
 
         Args:
             data (str): The string to be parsed.
@@ -105,7 +106,7 @@ class DataFrameRetriever(BaseRetriever):
         **kwargs,
     ):
         """
-        Parse a dictionary into a format that can be used by the prompt enhancer.
+        Parse a dictionary into a string.
 
         Args:
             data (dict): The dictionary to be parsed.
@@ -139,7 +140,7 @@ class DataFrameRetriever(BaseRetriever):
         cls, data: Iterable[str], data_key: str = "context.data", bullet_char: str = "-"
     ):
         """
-        Parse a list of strings into a format that can be used by the prompt enhancer.
+        Parse a list of strings into a string.
 
         Args:
             data (List[str]): The list of strings to be parsed.
@@ -160,7 +161,7 @@ class DataFrameRetriever(BaseRetriever):
         cls, path: str | os.PathLike[str], data_key: str = "context.data", **kwargs
     ):
         """
-        Parse a JSONL file into a format that can be used by the prompt enhancer.
+        Parse a JSONL file into a string.
 
         This method reads a JSONL file line by line and converts each line to a dictionary using the json.loads() method.
         The resulting dictionary is then converted to a pandas DataFrame before initiate the object

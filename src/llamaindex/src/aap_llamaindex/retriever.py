@@ -3,10 +3,11 @@ from aap_core.types import AgentMessage
 from llama_index.core.base.base_retriever import (
     BaseRetriever as LLamaIndexBaseRetriever,
 )
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 
 class RetrieverAdapter(BaseRetriever):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     retriever: LLamaIndexBaseRetriever = Field(
         ..., description="The llamaindex's retriever to use"
     )
