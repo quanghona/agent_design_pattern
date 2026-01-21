@@ -1,0 +1,4 @@
+site_name: AI Agent Pattern
+repo_url: https://github.com/quanghona/agent_design_pattern
+theme:
+  name: readthedocs

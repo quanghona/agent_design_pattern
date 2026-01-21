@@ -1,0 +1,16 @@
+[project]
+name = "agent-design-pattern"
+version = "0.1.0"
+description = "Agent design pattern / agent orchestration"
+readme = "README.md"
+requires-python = ">=3.10.12"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/quanghona/agent_design_pattern.git"
+
+[dependency-groups]
+docs = [
+    "mkdocs>=1.6.1",
+]
