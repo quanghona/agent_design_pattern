@@ -9,28 +9,7 @@ from .prompt_augmenter import (
     BasePromptAugmenter,
     IdentityPromptAugmenter,
 )
-from .types import AgentMessage, BaseChain, ChainMessage, ChainResponse
-
-
-class BaseLLMChain(BaseChain):
-    """
-    Base class for LLM chains.
-    """
-
-    name: str = Field(
-        "chain",
-        description="The name of the chain. Should be same at agent who hold this chain for easy to operate.",
-    )
-
-    @abc.abstractmethod
-    def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        pass
-
-    async def ainvoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        return self.invoke(message, **kwargs)
-
-    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        return self.invoke(message, **kwargs)
+from .types import AgentMessage, BaseLLMChain, ChainMessage, ChainResponse, TokenUsage
 
 
 class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainResponse]):

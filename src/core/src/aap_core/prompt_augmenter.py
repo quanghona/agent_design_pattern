@@ -1,16 +1,15 @@
 import abc
-from collections.abc import Callable, Sequence
-from typing import Concatenate, Dict, List, Literal, Tuple
 import warnings
+from collections.abc import Callable, Sequence
+from typing import Dict, List, Literal, Tuple
 
-from aap_core.chain import BaseLLMChain
+import numpy as np
 from pydantic import Field, PrivateAttr, field_validator
 
-from aap_core.retriever import BaseRetriever
+from .retriever import BaseRetriever
 
 # import toon_format
-from .types import AgentMessage, BaseChain
-import numpy as np
+from .types import AgentMessage, BaseChain, BaseLLMChain
 
 
 class BasePromptAugmenter(BaseChain):
@@ -112,9 +111,8 @@ class SimplePromptAugmenter(BasePromptAugmenter):
         return message
 
 
-class GEPAPromptAugmenter(BasePromptAugmenter):
-    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        raise NotImplementedError
+DataSet = Sequence[Tuple[str, str]]
+PerformanceTuple = Tuple[Sequence[float], float]
 
 
 class SEEPromptAugmenter(BasePromptAugmenter):
@@ -154,17 +152,11 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     Following our framework, in the prompt template, the keyword need to be prefix with 'context.' and the additional
     data need to store in 'context' field of the AgentMessage object
+
+    The custom scorer signature when initalization is Callable[[BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...], PerformanceTuple | None]
     """
 
-    DataSet = Sequence[Tuple[str, str]]
-    PerformanceTuple = Tuple[Sequence[float], float]
-
-    _scorer: Callable[
-        Concatenate[
-            BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...
-        ],
-        PerformanceTuple | None,
-    ] = PrivateAttr()
+    _scorer: Callable[..., PerformanceTuple | None] = PrivateAttr()
     _dist_func: Callable[[Sequence[float], Sequence[float]], float] = PrivateAttr()
     _scorer_args: Dict = PrivateAttr()
     _eval_method: Callable[[str, str], bool] = PrivateAttr()
@@ -198,9 +190,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     )
     init_data: DataSet | str = Field(
         ...,
-        description="""The intial data for phase 0. There are two types of initialzation:
+        description="""The initial data for phase 0. There are two types of initialzation:
         - See-io-pair: provide a set of input-output pairs. SEE apply Lamarckian to generate prompts
-        - SEE-example: SEE take a intial prompt and use Semantic to generate new prompts
+        - SEE-example: SEE take a initial prompt and use Semantic to generate new prompts
         """,
     )
 
@@ -321,18 +313,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     def __init__(
         self,
-        scorer: Literal["hamming"]
-        | Callable[
-            Concatenate[
-                BaseLLMChain,
-                str,
-                Sequence[str],
-                Sequence[PerformanceTuple],
-                DataSet,
-                ...,
-            ],
-            PerformanceTuple | None,
-        ] = "hamming",
+        scorer: Literal["hamming"] | Callable[..., PerformanceTuple | None] = "hamming",
         dist_func: Callable[[Sequence[float], Sequence[float]], float] | None = None,
         scorer_args: Dict = {},
         eval_method: Literal["exact", "include"] | Callable[[str, str], bool] = "exact",

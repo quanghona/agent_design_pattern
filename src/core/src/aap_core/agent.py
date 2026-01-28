@@ -5,8 +5,7 @@ from typing import Any, Dict, Literal
 from a2a.types import AgentCard
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .chain import BaseLLMChain
-from .types import AgentMessage
+from .types import AgentMessage, BaseLLMChain
 
 
 class BaseAgent(abc.ABC, BaseModel):

@@ -104,3 +104,24 @@ class BaseChain(abc.ABC, BaseModel):
     @abc.abstractmethod
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         pass
+
+
+class BaseLLMChain(BaseChain):
+    """
+    Base class for LLM chains.
+    """
+
+    name: str = Field(
+        "chain",
+        description="The name of the chain. Should be same at agent who hold this chain for easy to operate.",
+    )
+
+    @abc.abstractmethod
+    def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        pass
+
+    async def ainvoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        return self.invoke(message, **kwargs)
+
+    def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        return self.invoke(message, **kwargs)
