@@ -1,13 +1,14 @@
-from collections.abc import Sequence
 import json
 import os
 import re
-from typing import Any, Callable, Dict, List, Literal, Tuple, TypedDict
+from collections.abc import Sequence
+from typing import Any, Callable, Dict, List, Literal, Tuple
 
 from aap_core import utils
-from aap_core.agent import AgentMessage
 from aap_core.chain import BaseCausalMultiTurnsChain
+from aap_core.types import AgentMessage, TokenUsage
 from pydantic import Field, PrivateAttr
+from typing_extensions import TypedDict
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -88,7 +89,7 @@ class ChatCausalMultiTurnsChain(
         self,
         conversation: List[TransformersChainMessage],
         **kwargs,
-    ) -> Tuple[List[TransformersChainMessage], str, bool]:
+    ) -> Tuple[List[TransformersChainMessage], str, bool, TokenUsage]:
         inputs = self._tokenizer.apply_chat_template(
             conversation,
             tools=self.tools,
@@ -97,13 +98,20 @@ class ChatCausalMultiTurnsChain(
             return_tensors="pt",
         )
         output = self._model.generate(**inputs.to(self.device), **kwargs)
+        input_tokens = inputs.input_ids.shape[-1]
+        output_tokens = output[:, inputs.input_ids.shape[-1] :].shape[-1]
+        usage = TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        )
         output = self._tokenizer.batch_decode(
             output[:, inputs.input_ids.shape[-1] :], skip_special_tokens=True
         )[0]
         output = utils.remove_thinking(output)
         # TODO: aware with multimodal output
         conversation.append({"role": "assistant", "content": output})
-        return conversation, output, "<tool_call>" in output
+        return conversation, output, "<tool_call>" in output, usage
 
     def _process_tools(
         self,

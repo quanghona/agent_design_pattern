@@ -35,7 +35,7 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
     @abc.abstractmethod
     def _generate_response(
         self, conversation: List[ChainMessage], **kwargs
-    ) -> Tuple[List[ChainMessage], ChainResponse, bool]:
+    ) -> Tuple[List[ChainMessage], ChainResponse, bool, TokenUsage]:
         pass
 
     @abc.abstractmethod
@@ -55,12 +55,33 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
         # Template method
         conversation = self._prepare_conversation(message)
-        conversation, response, has_tool = self._generate_response(
+        conversation, response, has_tool, usage = self._generate_response(
             conversation, **kwargs
         )
+
+        if message.token_usage is None:
+            message.token_usage = {
+                "steps": [],
+                "total": TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
+            }
+        if "steps" not in message.token_usage:
+            message.token_usage["steps"] = []
+        if "total" not in message.token_usage:
+            message.token_usage["total"] = TokenUsage(
+                input_tokens=0, output_tokens=0, total_tokens=0
+            )
+
+        def add_token(usage: TokenUsage):
+            message.token_usage["steps"].append(usage)  # type: ignore
+            message.token_usage["total"]["input_tokens"] += usage["input_tokens"]  # type: ignore
+            message.token_usage["total"]["output_tokens"] += usage["output_tokens"]  # type: ignore
+            message.token_usage["total"]["total_tokens"] += usage["total_tokens"]  # type: ignore
+
+        add_token(usage)
         if has_tool:
             conversation = self._process_tools(conversation, response)
-            conversation, _, _ = self._generate_response(conversation, **kwargs)
+            conversation, _, _, usage = self._generate_response(conversation, **kwargs)
+            add_token(usage)
 
         message = self._append_responses(message, conversation)
 
@@ -110,14 +131,4 @@ class TypicalLLMChain(BaseLLMChain):
         message = self.prompt_augmenter(message)
         message = self.generate(message, **kwargs)
         message = self.output_guardrail(message)
-        return message
-
-
-class MetaPromptAugmenter(BasePromptAugmenter):
-    """A prompt augmenter that use an LLM chain to rewrite the prompt."""
-
-    chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
-
-    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        message = self.chain.invoke(message, **kwargs)
         return message

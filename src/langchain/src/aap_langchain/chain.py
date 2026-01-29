@@ -2,8 +2,8 @@ from collections.abc import Callable, Sequence
 from typing import Dict, List, Tuple
 
 from aap_core import utils
-from aap_core.agent import AgentMessage
 from aap_core.chain import BaseCausalMultiTurnsChain
+from aap_core.types import AgentMessage, TokenUsage
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -14,6 +14,8 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
+
+from aap_langchain.utils import token_from_response
 
 
 class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage]):
@@ -66,12 +68,22 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
 
     def _generate_response(
         self, conversation: List[BaseMessage], **kwargs
-    ) -> Tuple[List[BaseMessage], AIMessage, bool]:
+    ) -> Tuple[List[BaseMessage], AIMessage, bool, TokenUsage]:
         response = self._chain.invoke(conversation, **kwargs)
         if len(response.content) > 0 and isinstance(response.content, str):
             response.content = utils.remove_thinking(str(response.content))
         conversation.append(response)
-        return conversation, response, len(response.tool_calls) > 0
+        usage = (
+            token_from_response(response.usage_metadata)
+            if response.usage_metadata is not None
+            else TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0)
+        )
+        return (
+            conversation,
+            response,
+            len(response.tool_calls) > 0,
+            usage,
+        )
 
     def _process_tools(
         self,

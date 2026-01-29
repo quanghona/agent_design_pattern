@@ -111,6 +111,16 @@ class SimplePromptAugmenter(BasePromptAugmenter):
         return message
 
 
+class MetaPromptAugmenter(BasePromptAugmenter):
+    """A simple prompt augmenter that use an LLM chain to rewrite the prompt."""
+
+    chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
+
+    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        message = self.chain.invoke(message, **kwargs)
+        return message
+
+
 DataSet = Sequence[Tuple[str, str]]
 PerformanceTuple = Tuple[Sequence[float], float]
 

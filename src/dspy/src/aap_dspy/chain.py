@@ -1,7 +1,8 @@
 import abc
 from typing import Any, Dict, Generic, List, Tuple, TypeVar
 from aap_core.chain import BaseCausalMultiTurnsChain
-from aap_core.types import AgentMessage, AgentResponse
+from aap_core.types import AgentMessage, AgentResponse, TokenUsage
+from .utils import token_from_response
 import dspy
 from pydantic import Field, PrivateAttr
 
@@ -130,7 +131,7 @@ class ChatCausalMultiTurnsChain(
 
     def _generate_response(
         self, conversation: List[dspy.Signature], **kwargs
-    ) -> Tuple[List[dspy.Signature], dspy.Prediction, bool]:
+    ) -> Tuple[List[dspy.Signature], dspy.Prediction, bool, TokenUsage]:
         sig = conversation[-1].model_dump(exclude_none=True)
         if self._history_field_name is not None:
             # Convert dict to object as the library use object to access the history
@@ -138,10 +139,12 @@ class ChatCausalMultiTurnsChain(
             sig[self._history_field_name] = history
         if self._lm:
             # change context if possible
-            with dspy.context(lm=self._lm):
+            with dspy.context(lm=self._lm, track_usage=True):
                 data = self.predictor(**sig)
+                usage = token_from_response(data)
         else:
             data = self.predictor(**sig)
+            usage = token_from_response(data)
 
         has_tool = (
             False
@@ -150,7 +153,7 @@ class ChatCausalMultiTurnsChain(
         )
         sig.update(data.items())
         conversation.append(self._signature(**sig))
-        return conversation, data, has_tool
+        return conversation, data, has_tool, usage
 
     def _process_tools(
         self, conversation: List[dspy.Signature], response: dspy.Prediction
