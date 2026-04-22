@@ -134,6 +134,7 @@ class BaseLLMChain(BaseChain):
         + llama-index: There is a function to get the token in the llamaindex library is [token_from_response](https://developers.llamaindex.ai/python/framework-api-reference/callbacks/token_counter/#llama_index.core.callbacks.token_counting.get_tokens_from_response)
         + dspy: You need to set the configure enable `track_usage` either by `with dspy.context(..., track_usage=True) or `dspy.configure`.
         Then in the response object, there is a method `.get_lm_usage` to get the token count object.
+        Otherwise the token object is empty.
         + transformers: the pure output of the model is a tensor of token. We just simple get the length (its shape) of the token to obtain the result.
 
     For convenience, we already provided a simple utility `token_from_response` in all integration packages to convert the token count object to a unified TokenUsage object.
