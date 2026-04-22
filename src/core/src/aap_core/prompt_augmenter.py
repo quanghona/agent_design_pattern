@@ -1001,13 +1001,13 @@ class PromptOptimizationEnv(gym.Env):
         """Initialize the prompt optimization environment.
 
         Args:
+            initial_prompt: The starting prompt for the episode.
             augmenters: List of BasePromptAugmenter objects representing actions.
                        Each augmenter can modify the prompt in different ways.
             embedding_model: Callable that takes a prompt string and returns
                            its embedding as a numpy array.
             reward_model: Callable that takes a prompt string and returns
                         a float indicating prompt quality.
-            initial_prompt: The starting prompt for the episode.
             max_steps: Maximum number of steps per episode.
             min_embedding_threshold: episode terminated if the distance between 2
                 consecutive prompt embeddings falls below this threshold.
@@ -1016,29 +1016,22 @@ class PromptOptimizationEnv(gym.Env):
         """
         super().__init__()
 
-        # Store augmenters and create action space mapping
+        self._initial_prompt = initial_prompt
         self._augmenters = list(augmenters)
-        self._num_augmenters = len(augmenters)
+        self._embedding_model = embedding_model
+        self._reward_model = reward_model
+        self._max_steps = max_steps
+        self._min_embedding_threshold = min_embedding_threshold
+        self._reward_threshold = reward_threshold
+        self.eps = eps
+
+        # Determine embedding dimension by testing with initial prompt
+        self._embedding_dim = len(self._embedding_model(initial_prompt))
+        self._prev_embedding = None
 
         # Action space: discrete space where each value represents an augmenter
         # Actions are in range [0, num_augmenters)
-        self.action_space = spaces.Discrete(self._num_augmenters)
-
-        # Embedding model and observation space
-        self._embedding_model = embedding_model
-
-        # Termination thresholds
-        self._min_embedding_threshold = min_embedding_threshold
-        self._reward_threshold = reward_threshold
-
-        # Determine embedding dimension by testing with initial prompt
-        if initial_prompt:
-            test_embedding = self._embedding_model(initial_prompt)
-            self._embedding_dim = len(test_embedding)
-        else:
-            # Default to 768 if we can't determine dimension
-            self._embedding_dim = 768
-            test_embedding = np.zeros(self._embedding_dim, dtype=np.float32)
+        self.action_space = spaces.Discrete(len(self._augmenters))
 
         # Observation space: Box space for embedding vectors
         # Using unbounded box since embeddings can have any float values
@@ -1048,22 +1041,6 @@ class PromptOptimizationEnv(gym.Env):
             shape=(self._embedding_dim,),
             dtype=np.float32,
         )
-
-        # Reward model
-        self._reward_model = reward_model
-
-        # Store initial prompt for reset
-        self._initial_prompt = initial_prompt
-
-        # Episode state
-        self._current_prompt = initial_prompt
-        self._current_embedding = self._embedding_model(initial_prompt).astype(
-            np.float32
-        )
-        self._prev_embedding = self._current_embedding.copy()
-        self._step_count = 0
-        self._max_steps = max_steps
-        self.eps = eps
 
     def _get_observation(self) -> np.ndarray:
         """Get the current observation (prompt embedding).
@@ -1082,7 +1059,7 @@ class PromptOptimizationEnv(gym.Env):
         return {
             "current_prompt": self._current_prompt,
             "step_count": self._step_count,
-            "num_augmenters": self._num_augmenters,
+            "num_augmenters": len(self._augmenters),
         }
 
     def reset(
@@ -1097,7 +1074,6 @@ class PromptOptimizationEnv(gym.Env):
         Returns:
             Tuple of (observation, info) for the initial state.
         """
-        # Must call super().reset() to seed the RNG
         super().reset(seed=seed)
 
         # Reset episode state
@@ -1109,7 +1085,7 @@ class PromptOptimizationEnv(gym.Env):
         self._step_count = 0
         observation = self._get_observation()
         info = self._get_info()
-        self._print_state()
+        # self._print_state()
 
         return observation, info
 
@@ -1127,16 +1103,10 @@ class PromptOptimizationEnv(gym.Env):
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
-        # Apply the selected augmenter to the current prompt
-        augmenter = self._augmenters[action]
-
-        # Create AgentMessage with current prompt
-        message = AgentMessage(query=self._current_prompt)
-
-        # Apply the augmenter
         try:
+            augmenter = self._augmenters[action]
+            message = AgentMessage(query=self._current_prompt)
             result_message = augmenter(message)
-            # Update current prompt with the augmented result
             self._current_prompt = result_message.query
         except Exception as e:
             # If augmentation fails, keep the current prompt
@@ -1150,10 +1120,7 @@ class PromptOptimizationEnv(gym.Env):
             np.float32
         )
 
-        # Increment step count
         self._step_count += 1
-
-        # Check termination conditions
         terminated = False
         terminated_reason = None
 
