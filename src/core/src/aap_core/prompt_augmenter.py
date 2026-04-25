@@ -1,7 +1,9 @@
 import abc
 import os
+import time
 import warnings
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Dict, List, Literal, Tuple
 
 import numpy as np
@@ -10,6 +12,8 @@ import torch
 import gymnasium as gym
 from gymnasium import spaces
 
+from .policy import BasePolicy, GPT2Policy
+from .policy_gradient import ReinforcePP
 from .retriever import BaseRetriever
 
 # import toon_format
@@ -1160,4 +1164,388 @@ class PromptOptimizationEnv(gym.Env):
         print(f"Current Prompt: {self._current_prompt}")
         print(f"Quality: {self._reward_model(self._current_prompt):.4f}")
         print("=" * 60)
+
+
+class RLPromptAugmenter(BasePromptAugmenter):
+    """RL-based prompt augmenter using policy gradient methods."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    env: PromptOptimizationEnv = Field(
+        ..., description="The prompt optimization environment"
+    )
+    policy_model_path: str = Field(
+        ..., description="Path to save/load the policy model"
+    )
+    mode: Literal["train", "infer"] = Field(
+        default="train", description="Mode for the augmenter"
+    )
+    policy_model: BasePolicy | None = Field(
+        default=None, description="The trained policy model"
+    )
+
+    def __init__(
+        self,
+        env: PromptOptimizationEnv,
+        policy_model_path: str,
+        mode: Literal["train", "infer"] = "train",
+        n_layer: int = 4,
+        n_head: int = 4,
+        n_embd: int = 128,
+        block_size: int = 64,
+        **kwargs,
+    ):
+        # Prepare data for Pydantic initialization
+        init_data = {
+            "env": env,
+            "policy_model_path": policy_model_path,
+            "mode": mode,
+        }
+
+        # Handle model loading for inference mode
+        if mode == "infer":
+            if not os.path.exists(policy_model_path):
+                raise ValueError("Policy model path does not exist for inference mode")
+            else:
+                # Load the checkpoint
+                checkpoint = torch.load(policy_model_path, weights_only=False)
+
+                # Create a GPT2Policy model with the specified architecture
+                # We need to create a dummy environment to get the action/observation spaces
+                dummy_action_space = spaces.Discrete(2)  # Default to 2 actions
+                dummy_obs_space = spaces.Box(low=-1, high=1, shape=(n_embd,))
+
+                policy_model = GPT2Policy(
+                    action_space=dummy_action_space,
+                    observation_space=dummy_obs_space,
+                    n_layer=n_layer,
+                    n_head=n_head,
+                    n_embd=n_embd,
+                    block_size=block_size,
+                )
+
+                # Load the state_dict into the model
+                if isinstance(checkpoint, dict):
+                    if "model_state_dict" in checkpoint:
+                        state_dict = checkpoint["model_state_dict"]
+                    elif "state_dict" in checkpoint:
+                        state_dict = checkpoint["state_dict"]
+                    else:
+                        state_dict = checkpoint
+                else:
+                    state_dict = checkpoint
+
+                policy_model.load_state_dict(state_dict)
+                init_data["policy_model"] = policy_model
+
+        # Call parent __init__ with prepared data
+        super().__init__(**init_data, **kwargs)
+
+    def train(
+        self,
+        algo: Literal["reinforcepp", "ppo"],
+        max_episodes: int = 1000,
+        checkpoint_every: int = 10,
+        earlystop_last: int = 100,
+        record_every: int = 1000,
+        use_wandb: bool = False,
+        wandb_project: str = "prompt_optimization",
+        checkpoint_dir: str = "./ckpt",
+        **kwargs,
+    ) -> Dict:
+        """
+        Train the policy using REINFORCE++ or PPO algorithm.
+
+        Args:
+            algo: Algorithm to use ("reinforcepp" or "ppo")
+            max_episodes: Maximum number of training episodes
+            checkpoint_every: Save checkpoint every N episodes
+            earlystop_last: Early stop if no improvement in N episodes
+            record_every: Record episode every N episodes
+            use_wandb: Whether to use Weights & Biases for logging
+            wandb_project: WandB project name
+            checkpoint_dir: Directory to save checkpoints
+            **kwargs: Additional arguments for the algorithm
+
+        Returns:
+            Dictionary with training results
+        """
+        # Initialize WandB if enabled
+        if use_wandb:
+            try:
+                import wandb
+
+                wandb.init(
+                    project=wandb_project,
+                    config={
+                        "algo": algo,
+                        "max_episodes": max_episodes,
+                        "checkpoint_every": checkpoint_every,
+                        "earlystop_last": earlystop_last,
+                        "record_every": record_every,
+                        **kwargs,
+                    },
+                )
+            except ImportError:
+                warnings.warn("wandb not installed, skipping WandB logging")
+                use_wandb = False
+
+        # Create a unique subdirectory for this run session to isolate checkpoints
+        # Each training session gets its own isolated checkpoint directory
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        session_checkpoint_dir = os.path.join(checkpoint_dir, session_id)
+        os.makedirs(session_checkpoint_dir, exist_ok=True)
+
+        # Generate a unique checkpoint prefix based on hyperparameters
+        _n_layer = kwargs.get("n_layer", 4)
+        _n_head = kwargs.get("n_head", 4)
+        _n_embd = kwargs.get("n_embd", 128)
+        _block_size = kwargs.get("block_size", 64)
+        _ckpt_prefix = f"l{_n_layer}_h{_n_head}_e{_n_embd}_b{_block_size}"
+
+        # Initialize policy model if in train mode
+        if self.mode == "train":
+            if self.policy_model is None:
+                # Create a simple policy model
+                action_space = self.env.action_space
+                observation_space = self.env.observation_space
+                self.policy_model = GPT2Policy(
+                    action_space=action_space,
+                    observation_space=observation_space,
+                    n_layer=_n_layer,
+                    n_head=_n_head,
+                    n_embd=_n_embd,
+                    block_size=_block_size,
+                )
+
+            # Check if we should load existing checkpoint with matching hyperparameters
+            # Look in the parent checkpoint directory for existing checkpoints
+            existing_ckpt = sorted(
+                [
+                    f
+                    for f in os.listdir(checkpoint_dir)
+                    if f.startswith(_ckpt_prefix + "_checkpoint_") and f.endswith(".pt")
+                ]
+            )
+            if existing_ckpt:
+                latest_ckpt = os.path.join(checkpoint_dir, existing_ckpt[-1])
+                print(f"Loading checkpoint: {latest_ckpt}")
+                checkpoint = torch.load(latest_ckpt, weights_only=False)
+                try:
+                    self.policy_model.load_state_dict(checkpoint["model_state_dict"])
+                    start_episode = checkpoint.get("episode", 0)
+                except (RuntimeError, KeyError) as e:
+                    # Checkpoint shape mismatch (e.g., different hyperparameters)
+                    # or missing keys - start fresh
+                    print(f"Warning: Could not load checkpoint ({e}), starting fresh")
+                    start_episode = 0
+            else:
+                start_episode = 0
+
+        # Initialize optimizer (REINFORCE++)
+        if algo == "reinforcepp":
+            optimizer = ReinforcePP(
+                policy_model=self.policy_model,
+                clip_param=kwargs.get("clip_param", 0.2),
+                reinforce_epoch=kwargs.get("reinforce_epoch", 10),
+                num_mini_batch=kwargs.get("num_mini_batch", 4),
+                entropy_coef=kwargs.get("entropy_coef", 0.01),
+                lr=kwargs.get("lr", 1e-6),
+                eps=kwargs.get("eps", 1e-8),
+                max_grad_norm=kwargs.get("max_grad_norm", 1.0),
+            )
+        else:
+            raise ValueError(f"Algorithm {algo} not supported yet")
+
+        # Training loop
+        episode_rewards = []
+        best_reward = -float("inf")
+        no_improvement_count = 0
+
+        for episode in range(start_episode, max_episodes):
+            # Reset environment
+            obs, info = self.env.reset()
+            episode_reward = 0.0
+            episode_data = {
+                "observations": [],
+                "actions": [],
+                "rewards": [],
+                "masks": [],
+                "log_probs": [],
+            }
+
+            # Collect trajectory
+            done = False
+            truncated = False
+            step_count = 0
+
+            while not (done or truncated) and step_count < self.env._max_steps:
+                # Convert observation to tensor
+                obs_tensor = (
+                    torch.tensor(obs, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+                )
+
+                # Get action from policy
+                with torch.no_grad():
+                    logits = self.policy_model(obs_tensor)
+                    # Ensure logits is at least 1D (Categorical requires this)
+                    logits = logits.squeeze(-1) if logits.dim() > 1 else logits
+                    dist = torch.distributions.Categorical(logits=logits)
+                    action = dist.sample()
+                    log_prob = dist.log_prob(action)
+
+                # Take step in environment
+                next_obs, reward, done, truncated, info = self.env.step(action.item())
+
+                # Store transition
+                episode_data["observations"].append(obs)
+                episode_data["actions"].append(action.item())
+                episode_data["rewards"].append(reward)
+                episode_data["masks"].append(1.0 if not (done or truncated) else 0.0)
+                episode_data["log_probs"].append(log_prob.item())
+
+                episode_reward += reward
+                obs = next_obs
+                step_count += 1
+
+            # Convert to tensors
+            obs_tensor = torch.tensor(episode_data["observations"], dtype=torch.float32)
+            actions_tensor = torch.tensor(episode_data["actions"], dtype=torch.long)
+            rewards_tensor = torch.tensor(episode_data["rewards"], dtype=torch.float32)
+            masks_tensor = torch.tensor(episode_data["masks"], dtype=torch.float32)
+            old_log_probs_tensor = torch.tensor(
+                episode_data["log_probs"], dtype=torch.float32
+            )
+
+            # Prepare batch for update
+            batch = {
+                "obs": obs_tensor.unsqueeze(0),
+                "actions": actions_tensor.unsqueeze(0),
+                "rewards": rewards_tensor.unsqueeze(0),
+                "masks": masks_tensor.unsqueeze(0),
+                "old_log_probs": old_log_probs_tensor.unsqueeze(0),
+            }
+
+            # Update policy
+            update_result = optimizer.update(batch)
+
+            # Track metrics
+            episode_rewards.append(episode_reward)
+
+            # Check for improvement (early stopping)
+            mean_reward = np.mean(episode_rewards[-min(100, len(episode_rewards)) :])
+
+            if mean_reward > best_reward:
+                best_reward = mean_reward
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
+
+            # Logging
+            if use_wandb:
+                wandb.log(
+                    {
+                        "episode": episode,
+                        "episode_reward": episode_reward,
+                        "mean_reward_100": mean_reward,
+                        "best_reward": best_reward,
+                        "steps": step_count,
+                        **update_result,
+                    }
+                )
+
+            print(
+                f"Episode {episode}: reward={episode_reward:.4f}, mean_100={mean_reward:.4f}"
+            )
+
+            # Checkpointing
+            if (episode + 1) % checkpoint_every == 0:
+                ckpt_path = os.path.join(
+                    checkpoint_dir, f"{_ckpt_prefix}_checkpoint_{episode}.pt"
+                )
+                torch.save(
+                    {
+                        "episode": episode,
+                        "model_state_dict": self.policy_model.state_dict(),
+                        "optimizer_state_dict": optimizer.optimizer.state_dict(),
+                        "best_reward": best_reward,
+                    },
+                    ckpt_path,
+                )
+                print(f"Saved checkpoint: {ckpt_path}")
+
+            # Early stopping
+            if no_improvement_count >= earlystop_last:
+                print(f"Early stopping at episode {episode}")
+                break
+
+        # Export final model (new file, don't overwrite)
+        final_model_path = os.path.join(
+            os.path.dirname(self.policy_model_path),
+            f"final_model_{int(time.time())}.pt",
+        )
+        torch.save(self.policy_model.state_dict(), final_model_path)
+        print(f"Saved final model: {final_model_path}")
+
+        if use_wandb:
+            wandb.finish()
+
+        return {
+            "episode_rewards": episode_rewards,
+            "best_reward": best_reward,
+            "final_model_path": str(final_model_path),
+        }
+
+    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        """Use the trained policy to iteratively apply augmenters and update the prompt.
+
+        The policy model takes the current prompt embedding as input and outputs
+        action logits. We sample actions from the policy and apply the corresponding
+        augmenters until max_steps is reached.
+
+        The initial prompt is taken from the 'message' object's query field.
+
+        Args:
+            message: The input AgentMessage containing the initial prompt.
+            **kwargs: Additional arguments passed to the environment step.
+
+        Returns:
+            The updated AgentMessage with the optimized prompt.
+        """
+        if self.policy_model is None:
+            raise ValueError("Policy model is not loaded. Train or load a model first.")
+
+        # Set the initial prompt from the message object
+        self.env._initial_prompt = message.query
+        self.env._current_prompt = message.query
+
+        # Reset environment with the current prompt
+        obs, info = self.env.reset()
+        max_steps = self.env._max_steps
+        step_count = 0
+
+        while step_count < max_steps:
+            # Convert observation to tensor
+            obs_tensor = (
+                torch.tensor(obs, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+            )
+
+            # Get action from policy (no gradient needed for inference)
+            with torch.no_grad():
+                logits = self.policy_model(obs_tensor)
+                # Ensure logits is at least 1D (Categorical requires this)
+                logits = logits.squeeze(-1) if logits.dim() > 1 else logits
+                dist = torch.distributions.Categorical(logits=logits)
+                action = dist.sample()
+
+            # Take step in environment
+            obs, reward, terminated, truncated, info = self.env.step(action.item())
+            step_count += 1
+
+            # Stop if episode terminated early
+            if terminated:
+                break
+
+        message.query = info["current_prompt"]
+        return message
 
