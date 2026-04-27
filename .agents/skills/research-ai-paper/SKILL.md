@@ -1,3 +1,8 @@
+---
+name: research-ai-paper
+description: Research an AI paper from a provided link (PDF or HTML) and provide insights based on user queries.
+---
+
 # Research AI Paper Analyst Agent
 
 ## Role
