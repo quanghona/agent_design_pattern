@@ -998,7 +998,7 @@ class PromptOptimizationEnv(gym.Env):
         embedding_model: Callable[[str], np.ndarray],
         reward_model: Callable[[str], float],
         max_steps: int = 10,
-        min_embedding_threshold: float = 1e-3,
+        min_embedding_threshold: float = 0.8,
         reward_threshold: float = float("inf"),
         eps: float = 1e-8,
     ):
@@ -1020,11 +1020,17 @@ class PromptOptimizationEnv(gym.Env):
         """
         super().__init__()
 
+        # Validate that at least one augmenter is provided
+        assert len(augmenters) > 0, (
+            "At least one augmenter must be provided. "
+            "An empty list of augmenters results in an empty action space."
+        )
+
         self._initial_prompt = initial_prompt
-        self._augmenters = list(augmenters)
+        self._augmenters = augmenters
         self._embedding_model = embedding_model
         self._reward_model = reward_model
-        self._max_steps = max_steps
+        self.max_steps = max_steps
         self._min_embedding_threshold = min_embedding_threshold
         self._reward_threshold = reward_threshold
         self.eps = eps
@@ -1063,6 +1069,7 @@ class PromptOptimizationEnv(gym.Env):
         return {
             "current_prompt": self._current_prompt,
             "step_count": self._step_count,
+            "max_steps": self.max_steps,
             "num_augmenters": len(self._augmenters),
         }
 
@@ -1080,7 +1087,6 @@ class PromptOptimizationEnv(gym.Env):
         """
         super().reset(seed=seed)
 
-        # Reset episode state
         self._current_prompt = self._initial_prompt
         self._current_embedding = self._embedding_model(self._current_prompt).astype(
             np.float32
@@ -1089,7 +1095,6 @@ class PromptOptimizationEnv(gym.Env):
         self._step_count = 0
         observation = self._get_observation()
         info = self._get_info()
-        # self._print_state()
 
         return observation, info
 
@@ -1116,15 +1121,12 @@ class PromptOptimizationEnv(gym.Env):
             # If augmentation fails, keep the current prompt
             warnings.warn(f"Augmenter {action} failed: {e}")
 
-        # Compute reward based on the new prompt quality
         reward = self._reward_model(self._current_prompt)
-
-        # Update embedding for new observation
         self._current_embedding = self._embedding_model(self._current_prompt).astype(
             np.float32
         )
-
         self._step_count += 1
+        truncated = self._step_count >= self.max_steps
         terminated = False
         terminated_reason = None
 
@@ -1149,7 +1151,6 @@ class PromptOptimizationEnv(gym.Env):
 
         # Update previous embedding for next step
         self._prev_embedding = self._current_embedding.copy()
-        truncated = self._step_count >= self._max_steps
         observation = self._get_observation()
         info = self._get_info()
         info["terminated_reason"] = terminated_reason
@@ -1160,7 +1161,7 @@ class PromptOptimizationEnv(gym.Env):
     def _print_state(self) -> None:
         """Print the current environment state to the command line."""
         print("=" * 60)
-        print(f"Step: {self._step_count} / {self._max_steps}")
+        print(f"Step: {self._step_count} / {self.max_steps}")
         print(f"Current Prompt: {self._current_prompt}")
         print(f"Quality: {self._reward_model(self._current_prompt):.4f}")
         print("=" * 60)
