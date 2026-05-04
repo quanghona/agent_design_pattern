@@ -64,6 +64,37 @@ class BasePolicy(nn.Module, ABC):
         """
         pass
 
+    def get_action(
+        self, logits: torch.Tensor, deterministic: bool = True
+    ) -> Tuple[torch.Tensor, torch.Tensor]:  # Tuple of (action, action_log_prob)
+        """Extract action from policy output logits.
+
+        This method takes the raw action logits and samples an action according
+        to the specified mode (deterministic or stochastic). It also computes
+        the log probability of the selected action.
+
+        Args:
+            logits: Action logits of shape (batch_size, seq_len, action_dim)
+            deterministic: Whether to select the most likely action (True) or sample from the distribution (False)
+        Returns:
+            Tuple of (action, action_log_prob)
+                - action: Selected action of shape (batch_size, seq_len)
+                - action_log_prob: Log probability of the selected action of shape (batch_size, seq_len)
+        """
+        dists = [torch.distributions.Categorical(logits=logit) for logit in logits]
+        if deterministic:
+            action = torch.stack(
+                [torch.argmax(dist.probs, dim=1) for dist in dists],
+                dim=1,
+            )
+
+        else:
+            action = torch.stack([dist.sample() for dist in dists], dim=1)
+        action_log_prob = torch.stack(
+            [dist.log_prob(a) for dist, a in zip(dists, action)]
+        )
+        return action, action_log_prob
+
     @abstractmethod
     def evaluate_actions(
         self,
