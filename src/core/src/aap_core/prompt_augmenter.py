@@ -380,8 +380,8 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return performance_vector, sum(performance_vector) / len(performance_vector)
 
     @classmethod
-    def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> float:
-        return np.count_nonzero(np.array(v1) != np.array(v2))
+    def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> int:
+        return int(np.count_nonzero(np.array(v1) != np.array(v2)))
 
     def _hamming_scorer(
         self,
