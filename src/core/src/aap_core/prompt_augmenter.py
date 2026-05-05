@@ -1172,15 +1172,6 @@ class RLPromptAugmenter(BasePromptAugmenter):
     )
     policy_model: BasePolicy = Field(..., description="The trained policy model")
 
-    def __init__(
-        self,
-        env: PromptOptimizationEnv,
-        policy_model: BasePolicy,
-        **kwargs,
-    ):
-        self.env = env
-        self.policy_model = policy_model
-
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         """Use the trained policy to iteratively apply augmenters and update the prompt.
 
@@ -1207,10 +1198,8 @@ class RLPromptAugmenter(BasePromptAugmenter):
 
         while step_count < self.env.max_steps:
             # Convert observation to tensor with proper shape for policy model
-            # obs shape: (embedding_dim,) -> (1, 1, embedding_dim) for batch=1, seq=1
-            obs_tensor = (
-                torch.tensor(obs, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            )
+            # obs shape: (embedding_dim,) -> (1, embedding_dim) for batch=1
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
             # Get action from policy (no gradient needed for inference)
             with torch.no_grad():
@@ -1219,7 +1208,7 @@ class RLPromptAugmenter(BasePromptAugmenter):
                 action, action_log_prob = self.policy_model.get_action(logits)
 
             # Take step in environment
-            obs, reward, terminated, truncated, info = self.env.step(action.numpy()[0])
+            obs, reward, terminated, truncated, info = self.env.step(action.item())
             step_count += 1
 
             # Stop if episode terminated early

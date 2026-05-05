@@ -57,10 +57,10 @@ class BasePolicy(nn.Module, ABC):
         """Forward pass through the policy.
 
         Args:
-            obs: Observations of shape (batch_size, seq_len, obs_dim)
+            obs: Observations of shape (batch_size, obs_dim)
 
         Returns:
-            Action logits of shape (batch_size, seq_len, action_dim)
+            Action logits of shape (batch_size, action_dim)
         """
         pass
 
@@ -74,25 +74,19 @@ class BasePolicy(nn.Module, ABC):
         the log probability of the selected action.
 
         Args:
-            logits: Action logits of shape (batch_size, seq_len, action_dim)
+            logits: Action logits of shape (batch_size, action_dim)
             deterministic: Whether to select the most likely action (True) or sample from the distribution (False)
         Returns:
             Tuple of (action, action_log_prob)
-                - action: Selected action of shape (batch_size, seq_len)
-                - action_log_prob: Log probability of the selected action of shape (batch_size, seq_len)
+                - action: Selected action of shape (batch_size,)
+                - action_log_prob: Log probability of the selected action of shape (batch_size,)
         """
-        dists = [torch.distributions.Categorical(logits=logit) for logit in logits]
+        dist = torch.distributions.Categorical(logits=logits)
         if deterministic:
-            action = torch.stack(
-                [torch.argmax(dist.probs, dim=1) for dist in dists],
-                dim=1,
-            )
-
+            action = torch.argmax(dist.probs, dim=-1)
         else:
-            action = torch.stack([dist.sample() for dist in dists], dim=1)
-        action_log_prob = torch.stack(
-            [dist.log_prob(a) for dist, a in zip(dists, action)]
-        )
+            action = dist.sample()
+        action_log_prob = dist.log_prob(action)
         return action, action_log_prob
 
     @abstractmethod
@@ -108,19 +102,19 @@ class BasePolicy(nn.Module, ABC):
         the entropy of the action distribution, and optionally value estimates.
 
         Args:
-            obs: Observations of shape (batch_size, seq_len, obs_dim)
-            actions: Actions taken of shape (batch_size, seq_len)
-            masks: Binary masks of shape (batch_size, seq_len) indicating
+            obs: Observations of shape (batch_size, obs_dim)
+            actions: Actions taken of shape (batch_size,)
+            masks: Binary masks of shape (batch_size,) indicating
                    which positions are valid
 
         Returns:
             Tuple of (values, action_log_probs, entropy, logits):
-                - values: Value predictions of shape (batch_size, seq_len)
+                - values: Value predictions of shape (batch_size,)
                           (can be zeros if no critic network)
                 - action_log_probs: Log probabilities of taken actions
-                                    of shape (batch_size, seq_len)
-                - entropy: Per-position entropy of shape (batch_size, seq_len)
-                - logits: Action logits of shape (batch_size, seq_len, action_dim)
+                                    of shape (batch_size,)
+                - entropy: Per-position entropy of shape (batch_size,)
+                - logits: Action logits of shape (batch_size, action_dim)
         """
         pass
 
@@ -153,8 +147,8 @@ class GPT2Policy(BasePolicy):
         >>> action_space = spaces.Discrete(10)
         >>> observation_space = spaces.Box(low=-1, high=1, shape=(768,))
         >>> policy = GPT2Policy(action_space, observation_space, n_layer=6, n_embd=256)
-        >>> obs = torch.randn(8, 4, 768)  # batch=8, seq=4, dim=768
-        >>> logits = policy(obs)  # (8, 4, 10)
+        >>> obs = torch.randn(8, 768)  # batch=8, dim=768
+        >>> logits = policy(obs)  # (8, 10)
     """
 
     def __init__(
@@ -226,11 +220,13 @@ class GPT2Policy(BasePolicy):
         """Forward pass through the GPT-2 policy.
 
         Args:
-            obs: Observations of shape (batch_size, seq_len, obs_dim)
+            obs: Observations of shape (batch_size, obs_dim)
 
         Returns:
-            Action logits of shape (batch_size, seq_len, action_dim)
+            Action logits of shape (batch_size, action_dim)
         """
+        # Add sequence dimension (seq_len=1)
+        obs = obs.unsqueeze(1)  # (batch_size, 1, obs_dim)
         batch_size, seq_len, _ = obs.shape
 
         # Check sequence length
@@ -263,6 +259,9 @@ class GPT2Policy(BasePolicy):
         # Get action logits
         logits = self.action_head(x)  # (batch, seq_len, action_dim)
 
+        # Remove sequence dimension
+        logits = logits.squeeze(1)  # (batch_size, action_dim)
+
         return logits
 
     def evaluate_actions(
@@ -274,35 +273,34 @@ class GPT2Policy(BasePolicy):
         """Evaluate actions taken under the policy.
 
         Args:
-            obs: Observations of shape (batch_size, seq_len, obs_dim)
-            actions: Actions taken of shape (batch_size, seq_len)
-            masks: Binary masks of shape (batch_size, seq_len)
+            obs: Observations of shape (batch_size, obs_dim)
+            actions: Actions taken of shape (batch_size,)
+            masks: Masks of shape (batch_size,)
 
         Returns:
             Tuple of (values, action_log_probs, entropy, logits):
-                - values: Zeros (no critic network in REINFORCE++)
-                - action_log_probs: Log probs of taken actions (batch, seq_len)
-                - entropy: Per-position entropy (batch, seq_len)
-                - logits: Action logits (batch, seq_len, action_dim)
+                - values: Zeros (no critic network in REINFORCE++) of shape (batch_size,)
+                - action_log_probs: Log probs of taken actions of shape (batch_size,)
+                - entropy: Per-position entropy of shape (batch_size,)
+                - logits: Action logits of shape (batch_size, action_dim)
         """
         # Get action logits
-        logits = self.forward(obs)  # (batch, seq_len, action_dim)
+        logits = self.forward(obs)  # (batch_size, action_dim)
 
         # Compute log probabilities
-        log_probs = F.log_softmax(logits, dim=-1)  # (batch, seq_len, action_dim)
+        log_probs = F.log_softmax(logits, dim=-1)  # (batch_size, action_dim)
 
         # Get log probabilities of taken actions
-        batch_size, seq_len = actions.shape
-        action_log_probs = log_probs.gather(2, actions.unsqueeze(-1)).squeeze(
+        action_log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(
             -1
-        )  # (batch, seq_len)
+        )  # (batch_size,)
 
-        # Compute entropy per position
+        # Compute entropy
         probs = F.softmax(logits, dim=-1)
-        entropy = -(probs * log_probs).sum(dim=-1)  # (batch, seq_len)
+        entropy = -(probs * log_probs).sum(dim=-1)  # (batch_size,)
 
         # No value predictions in REINFORCE++ (no critic network)
-        values = torch.zeros(batch_size, seq_len, device=obs.device)
+        values = torch.zeros_like(actions, dtype=torch.float32, device=obs.device)
 
         return values, action_log_probs, entropy, logits
 
