@@ -10,7 +10,6 @@ from gymnasium import spaces
 from pydantic import Field, PrivateAttr, field_validator
 
 from .policy import BasePolicy
-from .retriever import BaseRetriever
 
 # import toon_format
 from .types import AgentMessage, BaseChain, BaseLLMChain
@@ -24,12 +23,10 @@ class BasePromptAugmenter(BaseChain):
     - Structure augmenter: Rewrite / refine the prompt partially or entirely.
     """
 
-    # TODO: handle case where single augmenter contains multiple retrievers
     loop: int | Callable[[AgentMessage], bool] | None = Field(
         default=None,
         description="The loop, either by number of times or by stop condition",
     )
-    retriever: BaseRetriever | None = Field(default=None, description="The retriever")
 
     async def acall(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return self(message, **kwargs)
@@ -39,8 +36,6 @@ class BasePromptAugmenter(BaseChain):
         return self(message, **kwargs)
 
     def call(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        if self.retriever:
-            message = self.retriever(message, **kwargs)
         return self.augment(message, **kwargs)
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -62,8 +57,6 @@ class IdentityPromptAugmenter(BasePromptAugmenter):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.loop = None
-        self.retriever = None
 
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return message
