@@ -12,6 +12,7 @@ Classes:
 
 import math
 from abc import ABC, abstractmethod
+import os
 from typing import Tuple
 
 import torch
@@ -46,11 +47,14 @@ class BasePolicy(nn.Module, ABC):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
+        load_from: str | None = None,
         **kargs,
     ):
         super().__init__()
         self.action_space = action_space
         self.observation_space = observation_space
+        if load_from is not None and os.path.exists(load_from):
+            self.load(load_from)
 
     @abstractmethod
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -117,6 +121,22 @@ class BasePolicy(nn.Module, ABC):
                 - logits: Action logits of shape (batch_size, action_dim)
         """
         pass
+
+    def save(self, path: str):
+        """Save the policy model to a file.
+
+        Args:
+            path: Path to save the model.
+        """
+        torch.save(self.state_dict(), path)
+
+    def load(self, path: str):
+        """Load the policy model from a file.
+
+        Args:
+            path: Path to load the model from.
+        """
+        self.load_state_dict(torch.load(path))
 
 
 class GPT2Policy(BasePolicy):
