@@ -95,6 +95,7 @@ class ReinforcePP(BasePolicyTrainer):
             gamma: Discount factor for return calculation (default 1.0 for REINFORCE++)
             eps: Epsilon for optimizer numerical stability
         """
+        # TODO: Add support for replay buffer and exploration module in future iterations
         super().__init__(
             policy_model,
             env,
@@ -485,7 +486,9 @@ class PPO(BasePolicyTrainer):
         replay_buffer=None,
         max_grad_norm: float = 1.0,
         use_clipped_value_loss=True,
+        gamma: float = 0.99,
         eps=1e-8,
+        **kwargs,
     ):
         super().__init__(
             actor_critic,
@@ -503,38 +506,140 @@ class PPO(BasePolicyTrainer):
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.gamma = gamma
 
-    def fit(self, **kwargs):
-        advantages = rollouts.returns[:-1] - rollouts.value_preds[:-1]
-        advantages = (advantages - advantages.mean()) / (advantages.std() + self.eps)
+    def fit(
+        self,
+        checkpoint_every: int = 10,
+        earlystop_last: int = 100,
+        record_every: int = 1000,
+        use_wandb: bool = False,
+        wandb_project: str = "prompt_optimization",
+        checkpoint_dir: str = "./ckpt",
+        **kwargs,
+    ):
+        """Train the policy using PPO with on-policy environment interaction.
+
+        Args:
+            checkpoint_every: Save checkpoint every N episodes.
+            earlystop_last: Early stop if no improvement in N episodes.
+            record_every: Record episode every N episodes (not implemented).
+            use_wandb: Whether to use Weights & Biases for logging.
+            wandb_project: WandB project name.
+            checkpoint_dir: Directory to save checkpoints.
+            **kwargs: Additional arguments. Supported keys: gamma.
+        """
+
+        if use_wandb:
+            try:
+                wandb.init(
+                    project=wandb_project,
+                    config={
+                        "max_episodes": self.max_episodes,
+                        "checkpoint_every": checkpoint_every,
+                        "earlystop_last": earlystop_last,
+                        "record_every": record_every,
+                    },
+                )
+            except ImportError:
+                warnings.warn("wandb not installed, skipping WandB logging")
+                use_wandb = False
+
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        episode_rewards = []
+        best_reward = -float("inf")
+        no_improvement_count = 0
         value_loss_epoch = 0.0
         action_loss_epoch = 0.0
         dist_entropy_epoch = 0.0
+        num_updates = 0
 
-        for e in range(self.max_episodes):
-            if self.policy_model.is_recurrent:
-                data_generator = rollouts.recurrent_generator(
-                    advantages, self.num_mini_batch
+        for episode in range(self.max_episodes):
+            obs, _ = self.env.reset()
+            episode_reward = 0.0
+            episode_data = {
+                "observations": [],
+                "actions": [],
+                "rewards": [],
+                "masks": [],
+                "log_probs": [],
+                "values": [],
+            }
+
+            done = False
+            truncated = False
+            step_count = 0
+
+            while not (done or truncated) and step_count < self.env.max_steps:
+                obs_tensor = (
+                    torch.tensor(obs, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 )
-            else:
-                data_generator = rollouts.feed_forward_generator(
-                    advantages, self.num_mini_batch
+                with torch.no_grad():
+                    logits = self.policy_model(obs_tensor)
+                    action_tensor, _ = self.policy_model.get_action(logits)
+                    values, action_log_probs, _, _ = self.policy_model.evaluate_actions(
+                        obs_tensor,
+                        action_tensor,
+                        torch.ones_like(action_tensor, dtype=torch.float32),
+                    )
+
+                action = int(action_tensor.item())
+                log_prob = action_log_probs[0].item()
+                value = values[0].item()
+
+                next_obs, reward, done, truncated, _ = self.env.step(action)
+
+                episode_data["observations"].append(obs)
+                episode_data["actions"].append(action)
+                episode_data["rewards"].append(reward)
+                episode_data["masks"].append(1.0 if not (done or truncated) else 0.0)
+                episode_data["log_probs"].append(log_prob)
+                episode_data["values"].append(value)
+
+                episode_reward += reward
+                obs = next_obs
+                step_count += 1
+
+            if len(episode_data["observations"]) == 0:
+                continue
+
+            obs_tensor = torch.tensor(episode_data["observations"], dtype=torch.float32)
+            actions_tensor = torch.tensor(episode_data["actions"], dtype=torch.long)
+            rewards_tensor = torch.tensor(episode_data["rewards"], dtype=torch.float32)
+            masks_tensor = torch.tensor(episode_data["masks"], dtype=torch.float32)
+            old_log_probs_tensor = torch.tensor(
+                episode_data["log_probs"], dtype=torch.float32
+            )
+            values_tensor = torch.tensor(episode_data["values"], dtype=torch.float32)
+
+            returns = torch.zeros_like(rewards_tensor)
+            cumulative_return = torch.zeros_like(rewards_tensor[0])
+            for t in reversed(range(rewards_tensor.size(0))):
+                cumulative_return = (
+                    cumulative_return * self.gamma * masks_tensor[t] + rewards_tensor[t]
                 )
+                returns[t] = cumulative_return
 
-            for sample in data_generator:
-                (
-                    obs_batch,
-                    recurrent_hidden_states_batch,
-                    actions_batch,
-                    value_preds_batch,
-                    return_batch,
-                    masks_batch,
-                    old_action_log_probs_batch,
-                    adv_targ,
-                ) = sample
+            advantages = returns - values_tensor
+            adv_std = advantages.std()
+            if adv_std > self.eps:
+                advantages = (advantages - advantages.mean()) / adv_std
 
-                # Reshape to do in a single forward pass for all steps
-                values, action_log_probs, dist_entropy, _ = (
+            batch_size = rewards_tensor.size(0)
+            indices = torch.randperm(batch_size)
+
+            for i in range(0, batch_size, self.num_mini_batch):
+                batch_indices = indices[i : i + self.num_mini_batch]
+                obs_batch = obs_tensor[batch_indices].unsqueeze(1)
+                actions_batch = actions_tensor[batch_indices]
+                masks_batch = masks_tensor[batch_indices]
+                old_log_probs_batch = old_log_probs_tensor[batch_indices]
+                values_batch = values_tensor[batch_indices]
+                return_batch = returns[batch_indices]
+                adv_batch = advantages[batch_indices]
+
+                values_pred, action_log_probs, dist_entropy, _ = (
                     self.policy_model.evaluate_actions(
                         obs_batch,
                         actions_batch,
@@ -542,46 +647,92 @@ class PPO(BasePolicyTrainer):
                     )
                 )
 
-                ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
-                surr1 = ratio * adv_targ
+                ratio = torch.exp(action_log_probs - old_log_probs_batch)
+                surr1 = ratio * adv_batch
                 surr2 = (
                     torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
-                    * adv_targ
+                    * adv_batch
                 )
                 action_loss = -torch.min(surr1, surr2).mean()
 
                 if self.use_clipped_value_loss:
-                    value_pred_clipped = value_preds_batch + (
-                        values - value_preds_batch
+                    value_pred_clipped = values_batch + (
+                        values_pred - values_batch
                     ).clamp(-self.clip_param, self.clip_param)
-                    value_losses = (values - return_batch).pow(2)
+                    value_losses = (values_pred - return_batch).pow(2)
                     value_losses_clipped = (value_pred_clipped - return_batch).pow(2)
                     value_loss = (
                         0.5 * torch.max(value_losses, value_losses_clipped).mean()
                     )
                 else:
-                    value_loss = 0.5 * (return_batch - values).pow(2).mean()
+                    value_loss = 0.5 * (return_batch - values_pred).pow(2).mean()
 
-                self.optimizer.zero_grad()
-                (
+                loss = (
                     value_loss * self.value_loss_coef
                     + action_loss
-                    - dist_entropy * self.entropy_coef
-                ).backward()
+                    - dist_entropy.mean() * self.entropy_coef
+                )
+
+                self.optimizer.zero_grad()
+                loss.backward()
                 nn.utils.clip_grad_norm_(
                     self.policy_model.parameters(), self.max_grad_norm
                 )
                 self.optimizer.step()
 
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.step()
+
                 value_loss_epoch += value_loss.item()
                 action_loss_epoch += action_loss.item()
-                dist_entropy_epoch += dist_entropy.item()
+                dist_entropy_epoch += dist_entropy.mean().item()
+                num_updates += 1
 
-        num_updates = self.max_episodes * self.num_mini_batch
+            episode_rewards.append(episode_reward)
+            mean_reward = np.mean(episode_rewards[-min(100, len(episode_rewards)) :])
 
-        value_loss_epoch /= num_updates
-        action_loss_epoch /= num_updates
-        dist_entropy_epoch /= num_updates
+            if mean_reward > best_reward:
+                best_reward = mean_reward
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
 
-        return value_loss_epoch, action_loss_epoch, dist_entropy_epoch
+            if use_wandb:
+                wandb.log(
+                    {
+                        "episode": episode,
+                        "episode_reward": episode_reward,
+                        "mean_reward_100": mean_reward,
+                        "best_reward": best_reward,
+                        "steps": step_count,
+                        "value_loss": value_loss_epoch / max(num_updates, 1),
+                        "action_loss": action_loss_epoch / max(num_updates, 1),
+                        "dist_entropy": dist_entropy_epoch / max(num_updates, 1),
+                    }
+                )
+
+            print(
+                f"Episode {episode}: reward={episode_reward:.4f}, mean_100={mean_reward:.4f}"
+            )
+
+            if (episode + 1) % checkpoint_every == 0:
+                ckpt_path = os.path.join(checkpoint_dir, f"ppo_checkpoint_{episode}.pt")
+                torch.save(
+                    {
+                        "episode": episode,
+                        "model_state_dict": self.policy_model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                        "best_reward": best_reward,
+                    },
+                    ckpt_path,
+                )
+                print(f"Saved checkpoint: {ckpt_path}")
+
+            if no_improvement_count >= earlystop_last:
+                print(f"Early stopping at episode {episode}")
+                break
+
+        if use_wandb:
+            wandb.finish()
+        print("done")
 
