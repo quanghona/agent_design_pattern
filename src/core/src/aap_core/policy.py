@@ -12,7 +12,6 @@ Classes:
 
 import math
 from abc import ABC, abstractmethod
-import os
 from typing import Tuple
 
 import torch
@@ -34,7 +33,7 @@ class BasePolicy(nn.Module, ABC):
 
     Args:
         action_space: The action space (typically gymnasium.spaces.Discrete)
-        observation_space: The observation space (typically gymnasium.spaces.Box)
+        observation_space: The observation space (typically gymnasium.spaces.Box). Typically, the state is the n-dimensional embedding of the prompt
 
     Example:
         >>> from gymnasium import spaces
@@ -47,14 +46,12 @@ class BasePolicy(nn.Module, ABC):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
-        load_from: str | None = None,
+        weight: str | None = None,
         **kargs,
     ):
         super().__init__()
         self.action_space = action_space
         self.observation_space = observation_space
-        if load_from is not None and os.path.exists(load_from):
-            self.load(load_from)
 
     @abstractmethod
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -175,6 +172,7 @@ class GPT2Policy(BasePolicy):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
+        weight: str | None = None,
         n_layer: int = 4,
         n_head: int = 4,
         n_embd: int = 128,
@@ -182,12 +180,14 @@ class GPT2Policy(BasePolicy):
         embd_pdrop: float = 0.1,
         resid_pdrop: float = 0.1,
         attn_pdrop: float = 0.1,
+        use_value_head: bool = False,
     ):
         super().__init__(action_space, observation_space)
 
         self.n_embd = n_embd
         self.block_size = block_size
         self.action_dim = int(action_space.n)
+        self.use_value_head = use_value_head
 
         # Project observations to embedding dimension
         obs_dim = observation_space.shape[0]
@@ -213,11 +213,19 @@ class GPT2Policy(BasePolicy):
         # Action head - maps embeddings to action logits
         self.action_head = nn.Linear(n_embd, self.action_dim)
 
+        # Optional value head - maps embeddings to scalar state values
+        self.value_head = nn.Linear(n_embd, 1) if use_value_head else None
+
         # Initialize weights following GPT-2 conventions
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
+        if weight is None:
+            self.apply(self._init_weights)
+            for pn, p in self.named_parameters():
+                if pn.endswith("c_proj.weight"):
+                    torch.nn.init.normal_(
+                        p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer)
+                    )
+        else:
+            self.load_state_dict(torch.load(weight))
 
     def _init_weights(self, module: nn.Module):
         """Initialize weights following GPT-2 paper conventions.
@@ -236,52 +244,51 @@ class GPT2Policy(BasePolicy):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the GPT-2 policy.
+    def _get_hidden_states(self, obs: torch.Tensor) -> torch.Tensor:
+        """Compute shared transformer hidden states for observations.
 
         Args:
-            obs: Observations of shape (batch_size, obs_dim)
+            obs: Observations of shape (batch_size, seq_len, obs_dim) or
+                 (batch_size, obs_dim) for single-step inference.
 
         Returns:
-            Action logits of shape (batch_size, action_dim)
+            Hidden state tensor of shape (batch_size, seq_len, n_embd)
         """
-        # Add sequence dimension (seq_len=1)
-        obs = obs.unsqueeze(1)  # (batch_size, 1, obs_dim)
-        batch_size, seq_len, _ = obs.shape
+        if obs.ndim == 2:
+            obs = obs.unsqueeze(1)
 
-        # Check sequence length
+        batch_size, seq_len, obs_dim = obs.shape
         assert seq_len <= self.block_size, (
             f"Cannot forward sequence of length {seq_len}, "
             f"block_size is only {self.block_size}"
         )
 
-        # Project observations to embedding dimension
-        x = self.obs_projection(obs)  # (batch, seq_len, n_embd)
+        x = self.obs_projection(obs)
 
-        # Add positional embeddings
         device = obs.device
-        pos = torch.arange(0, seq_len, dtype=torch.long, device=device).unsqueeze(
-            0
-        )  # (1, seq_len)
-        pos_emb = self.pos_embeddings(pos)  # (1, seq_len, n_embd)
+        pos = torch.arange(0, seq_len, dtype=torch.long, device=device).unsqueeze(0)
+        pos_emb = self.pos_embeddings(pos)
         x = x + pos_emb
 
-        # Apply dropout
         x = self.drop(x)
-
-        # Process through transformer blocks
         for block in self.blocks:
             x = block(x)
 
-        # Final layer norm
         x = self.ln_f(x)
+        return x
 
-        # Get action logits
-        logits = self.action_head(x)  # (batch, seq_len, action_dim)
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the GPT-2 policy.
 
-        # Remove sequence dimension
-        logits = logits.squeeze(1)  # (batch_size, action_dim)
+        Args:
+            obs: Observations of shape (batch_size, seq_len, obs_dim) or
+                 (batch_size, obs_dim).
 
+        Returns:
+            Action logits of shape (batch_size, seq_len, action_dim)
+        """
+        hidden_states = self._get_hidden_states(obs)
+        logits = self.action_head(hidden_states)
         return logits
 
     def evaluate_actions(
@@ -293,34 +300,40 @@ class GPT2Policy(BasePolicy):
         """Evaluate actions taken under the policy.
 
         Args:
-            obs: Observations of shape (batch_size, obs_dim)
-            actions: Actions taken of shape (batch_size,)
-            masks: Masks of shape (batch_size,)
+            obs: Observations of shape (batch_size, seq_len, obs_dim) or
+                 (batch_size, obs_dim)
+            actions: Actions taken of shape (batch_size, seq_len) or
+                     (batch_size,)
+            masks: Masks of shape (batch_size, seq_len) or (batch_size,)
 
         Returns:
             Tuple of (values, action_log_probs, entropy, logits):
-                - values: Zeros (no critic network in REINFORCE++) of shape (batch_size,)
-                - action_log_probs: Log probs of taken actions of shape (batch_size,)
-                - entropy: Per-position entropy of shape (batch_size,)
-                - logits: Action logits of shape (batch_size, action_dim)
+                - values: Value predictions of shape (batch_size, seq_len)
+                - action_log_probs: Log probs of taken actions of shape (batch_size, seq_len)
+                - entropy: Per-position entropy of shape (batch_size, seq_len)
+                - logits: Action logits of shape (batch_size, seq_len, action_dim)
         """
-        # Get action logits
-        logits = self.forward(obs)  # (batch_size, action_dim)
+        if obs.ndim == 2:
+            obs = obs.unsqueeze(1)
+        if actions.ndim == 1:
+            actions = actions.unsqueeze(-1)
+        if masks.ndim == 1:
+            masks = masks.unsqueeze(-1)
 
-        # Compute log probabilities
-        log_probs = F.log_softmax(logits, dim=-1)  # (batch_size, action_dim)
+        hidden_states = self._get_hidden_states(obs)
+        logits = self.action_head(hidden_states)
 
-        # Get log probabilities of taken actions
-        action_log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(
-            -1
-        )  # (batch_size,)
+        log_probs = F.log_softmax(logits, dim=-1)
+        action_log_probs = log_probs.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
-        # Compute entropy
         probs = F.softmax(logits, dim=-1)
-        entropy = -(probs * log_probs).sum(dim=-1)  # (batch_size,)
+        entropy = -(probs * log_probs).sum(dim=-1)
 
-        # No value predictions in REINFORCE++ (no critic network)
-        values = torch.zeros_like(actions, dtype=torch.float32, device=obs.device)
+        if self.use_value_head and self.value_head is not None:
+            values = self.value_head(hidden_states).squeeze(-1)
+            values = values * masks
+        else:
+            values = torch.zeros_like(masks, dtype=torch.float32, device=obs.device)
 
         return values, action_log_probs, entropy, logits
 
