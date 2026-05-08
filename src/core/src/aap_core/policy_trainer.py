@@ -1,16 +1,18 @@
-from abc import ABC, abstractmethod
 import glob
 import os
 import warnings
+from abc import ABC, abstractmethod
+from typing import Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import wandb
 
 from aap_core.policy import BasePolicy
 from aap_core.prompt_augmenter import PromptOptimizationEnv
-import numpy as np
-import torch
-import torch.nn.functional as F
-
-import torch.nn as nn
-import wandb
+from aap_core.types import AgentMessage
 
 
 class BasePolicyTrainer(ABC):
@@ -1143,3 +1145,513 @@ class PPO(BasePolicyTrainer):
             wandb.finish()
         print("done")
 
+
+class DPO(BasePolicyTrainer):
+    """Direct Preference Optimization (DPO) trainer for prompt augmentation.
+
+    DPO is a parameter-efficient and computationally efficient approach to optimize
+    prompts based on preference pairs. Unlike RLHF which requires a separate reward
+    model, DPO directly optimizes the policy using preference data.
+
+    Key differences from RLHF:
+    - No explicit reward model training required
+    - No critic network needed
+    - Single-stage training on offline preference pairs
+    - Implicit reward function derived from policy
+
+    For prompt optimization:
+    - We collect pairs of augmentations (preferred, rejected)
+    - The preferred augmentation has higher reward (from reward_model)
+    - We optimize the policy to prefer higher-reward augmentations
+
+    Reference: https://arxiv.org/pdf/2305.18290
+
+    Args:
+        policy_model: The policy model to optimize
+        env: PromptOptimizationEnv with reward_model and augmenters
+        max_episodes: Maximum number of training episodes
+        optimizer: PyTorch optimizer for parameter updates
+        lr_scheduler: Optional learning rate scheduler
+        exploration_module: Optional exploration module (unused for now)
+        replay_buffer: Optional replay buffer (unused for now)
+        beta: Temperature parameter controlling preference learning strength (default 0.1)
+        num_mini_batch: Number of mini-batches per epoch (default 4)
+        max_grad_norm: Maximum gradient norm for clipping (default 1.0)
+        use_reference_policy: Whether to maintain separate reference policy (default True)
+        eps: Epsilon for numerical stability (default 1e-8)
+    """
+
+    def __init__(
+        self,
+        policy_model: BasePolicy,
+        env: PromptOptimizationEnv,
+        max_episodes: int,
+        optimizer: torch.optim.Optimizer,
+        lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
+        exploration_module=None,
+        replay_buffer=None,
+        beta: float = 0.1,
+        num_mini_batch: int = 4,
+        max_grad_norm: float = 1.0,
+        use_reference_policy: bool = True,
+        eps: float = 1e-8,
+        **kwargs,
+    ):
+        """Initialize DPO trainer.
+
+        Args:
+            policy_model: The policy model to optimize
+            env: PromptOptimizationEnv with reward_model for evaluating augmentations
+            max_episodes: Maximum number of training episodes
+            optimizer: PyTorch optimizer
+            lr_scheduler: Optional learning rate scheduler
+            exploration_module: Optional exploration module (not used currently)
+            replay_buffer: Optional replay buffer (not used currently)
+            beta: Temperature parameter (0.1-0.5 typical)
+            num_mini_batch: Number of mini-batches for gradient updates
+            max_grad_norm: Maximum gradient norm for clipping
+            use_reference_policy: Whether to keep reference policy frozen
+            eps: Numerical stability epsilon
+        """
+        super().__init__(
+            policy_model,
+            env,
+            max_episodes,
+            optimizer,
+            lr_scheduler,
+            exploration_module,
+            replay_buffer,
+            eps,
+        )
+        self.beta = beta
+        self.num_mini_batch = num_mini_batch
+        self.max_grad_norm = max_grad_norm
+        self.use_reference_policy = use_reference_policy
+        self.eps = eps
+
+        # Create reference policy as a copy of the policy model if specified
+        if self.use_reference_policy:
+            self.reference_policy = type(policy_model)(
+                policy_model.action_space,
+                policy_model.observation_space,
+            )
+            # Copy state dict from policy model
+            self.reference_policy.load_state_dict(policy_model.state_dict())
+            # Freeze reference policy parameters
+            for param in self.reference_policy.parameters():
+                param.requires_grad = False
+        else:
+            self.reference_policy = None
+
+    def _collect_preference_pairs(
+        self, num_pairs: int = 32
+    ) -> Tuple[list, list, list, list]:
+        """Collect preference pairs by interacting with environment.
+
+        For each base prompt, we try different augmentations and compare rewards
+        to create preference pairs (preferred, rejected).
+
+        Args:
+            num_pairs: Number of preference pairs to collect
+
+        Returns:
+            Tuple of (preferred_prompts, rejected_prompts, preferred_rewards, rejected_rewards)
+        """
+        preferred_prompts = []
+        rejected_prompts = []
+        preferred_rewards = []
+        rejected_rewards = []
+
+        for _ in range(num_pairs):
+            # Reset environment to get a starting prompt
+            obs, info = self.env.reset()
+            current_prompt = info["current_prompt"]
+
+            # Collect augmentations and their rewards
+            augmentation_rewards = []
+            augmented_prompts = []
+
+            for action_idx in range(len(self.env._augmenters)):
+                augmenter = self.env._augmenters[action_idx]
+                try:
+                    # Apply augmentation
+                    message = AgentMessage(query=current_prompt)
+                    result_message = augmenter(message)
+                    augmented_prompt = result_message.query
+
+                    # Evaluate reward
+                    reward = self.env._reward_model(augmented_prompt)
+
+                    augmentation_rewards.append(reward)
+                    augmented_prompts.append(augmented_prompt)
+                except Exception:
+                    # If augmentation fails, assign very low reward
+                    augmentation_rewards.append(-float("inf"))
+                    augmented_prompts.append(None)
+
+            # Find preferred (highest reward) and rejected (lowest reward)
+            valid_indices = [
+                i for i, r in enumerate(augmentation_rewards) if r != -float("inf")
+            ]
+
+            if len(valid_indices) >= 2:
+                # Sort by reward
+                valid_indices_sorted = sorted(
+                    valid_indices, key=lambda i: augmentation_rewards[i]
+                )
+
+                # Preferred: highest reward
+                preferred_idx = valid_indices_sorted[-1]
+                # Rejected: lowest reward (or second best if only 2)
+                rejected_idx = valid_indices_sorted[0]
+
+                preferred_prompts.append(augmented_prompts[preferred_idx])
+                rejected_prompts.append(augmented_prompts[rejected_idx])
+                preferred_rewards.append(augmentation_rewards[preferred_idx])
+                rejected_rewards.append(augmentation_rewards[rejected_idx])
+
+        return preferred_prompts, rejected_prompts, preferred_rewards, rejected_rewards
+
+    def _compute_dpo_loss(
+        self,
+        policy_log_probs_w: torch.Tensor,
+        policy_log_probs_l: torch.Tensor,
+        reference_log_probs_w: torch.Tensor,
+        reference_log_probs_l: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute DPO loss using the Bradley-Terry model.
+
+        The DPO loss encourages the policy to increase the log probability of
+        preferred augmentations while decreasing it for rejected ones.
+
+        Loss = -log(sigma(β * (log_pi_w/pi_ref_w - log_pi_l/pi_ref_l)))
+
+        Args:
+            policy_log_probs_w: Log probs from policy for winning (preferred) actions
+            policy_log_probs_l: Log probs from policy for losing (rejected) actions
+            reference_log_probs_w: Log probs from reference for winning actions
+            reference_log_probs_l: Log probs from reference for losing actions
+
+        Returns:
+            DPO loss (scalar)
+        """
+        # Compute log probability ratios (implicit rewards)
+        # r_theta = beta * (log(π_theta(y_w|x)) - log(π_ref(y_w|x)))
+        log_ratio_w = policy_log_probs_w - reference_log_probs_w
+        log_ratio_l = policy_log_probs_l - reference_log_probs_l
+
+        # DPO loss using sigmoid: -log(sigma(beta * (r_w - r_l)))
+        log_ratios_diff = self.beta * (log_ratio_w - log_ratio_l)
+        losses = -F.logsigmoid(log_ratios_diff)
+
+        return losses.mean()
+
+    def update(
+        self,
+        preferred_obs,
+        rejected_obs,
+        preferred_actions,
+        rejected_actions,
+        preferred_masks,
+        rejected_masks,
+    ) -> Tuple[float, float]:
+        """Perform one update step using DPO loss.
+
+        Args:
+            preferred_obs: Observations for preferred prompts
+            rejected_obs: Observations for rejected prompts
+            preferred_actions: Actions taken for preferred prompts
+            rejected_actions: Actions taken for rejected prompts
+            preferred_masks: Masks for preferred prompts
+            rejected_masks: Masks for rejected prompts
+
+        Returns:
+            Tuple of (dpo_loss, implicit_reward_diff)
+        """
+        dpo_loss_epoch = 0.0
+        implicit_reward_diff_epoch = 0.0
+        num_updates = 0
+
+        batch_size = preferred_obs.size(0)
+        indices = torch.randperm(batch_size)
+
+        for i in range(0, batch_size, self.num_mini_batch):
+            batch_indices = indices[i : i + self.num_mini_batch]
+
+            # Get batch data
+            pref_obs_batch = preferred_obs[batch_indices]
+            rej_obs_batch = rejected_obs[batch_indices]
+            pref_actions_batch = preferred_actions[batch_indices]
+            rej_actions_batch = rejected_actions[batch_indices]
+            pref_masks_batch = preferred_masks[batch_indices]
+            rej_masks_batch = rejected_masks[batch_indices]
+
+            # Forward pass for preferred actions through policy
+            _, policy_log_probs_w, _, _ = self.policy_model.evaluate_actions(
+                pref_obs_batch, pref_actions_batch, pref_masks_batch
+            )
+
+            # Forward pass for rejected actions through policy
+            _, policy_log_probs_l, _, _ = self.policy_model.evaluate_actions(
+                rej_obs_batch, rej_actions_batch, rej_masks_batch
+            )
+
+            # Get log probs from reference policy (no gradient)
+            if self.use_reference_policy:
+                with torch.no_grad():
+                    _, reference_log_probs_w, _, _ = (
+                        self.reference_policy.evaluate_actions(
+                            pref_obs_batch, pref_actions_batch, pref_masks_batch
+                        )
+                    )
+                    _, reference_log_probs_l, _, _ = (
+                        self.reference_policy.evaluate_actions(
+                            rej_obs_batch, rej_actions_batch, rej_masks_batch
+                        )
+                    )
+            else:
+                # If no reference policy, use detached policy logits
+                with torch.no_grad():
+                    _, reference_log_probs_w, _, _ = self.policy_model.evaluate_actions(
+                        pref_obs_batch, pref_actions_batch, pref_masks_batch
+                    )
+                    _, reference_log_probs_l, _, _ = self.policy_model.evaluate_actions(
+                        rej_obs_batch, rej_actions_batch, rej_masks_batch
+                    )
+
+            # Compute DPO loss
+            dpo_loss = self._compute_dpo_loss(
+                policy_log_probs_w,
+                policy_log_probs_l,
+                reference_log_probs_w,
+                reference_log_probs_l,
+            )
+
+            # Compute implicit reward difference for logging
+            with torch.no_grad():
+                implicit_reward_w = self.beta * (
+                    policy_log_probs_w - reference_log_probs_w
+                )
+                implicit_reward_l = self.beta * (
+                    policy_log_probs_l - reference_log_probs_l
+                )
+                implicit_reward_diff = (implicit_reward_w - implicit_reward_l).mean()
+
+            # Backward pass
+            self.optimizer.zero_grad()
+            dpo_loss.backward()
+            nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            # Step the learning rate scheduler if provided
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+            dpo_loss_epoch += dpo_loss.item()
+            implicit_reward_diff_epoch += implicit_reward_diff.item()
+            num_updates += 1
+
+        return (
+            dpo_loss_epoch / max(num_updates, 1),
+            implicit_reward_diff_epoch / max(num_updates, 1),
+        )
+
+    def fit(
+        self,
+        checkpoint_every: int = 10,
+        earlystop_last: int = 100,
+        record_every: int = 1000,
+        use_wandb: bool = True,
+        wandb_project: str = "prompt_optimization",
+        checkpoint_dir: str = "./ckpt",
+        pairs_per_episode: int = 32,
+        **kwargs,
+    ) -> None:
+        """Train the policy using DPO on preference pairs.
+
+        DPO training proceeds by:
+        1. Collecting preference pairs through environment interaction
+        2. Computing log probabilities under policy and reference
+        3. Optimizing using the DPO loss (Bradley-Terry model)
+
+        Args:
+            checkpoint_every: Save checkpoint every N episodes
+            earlystop_last: Early stop if no improvement in N episodes
+            record_every: Record metrics every N episodes
+            use_wandb: Whether to use Weights & Biases for logging
+            wandb_project: WandB project name
+            checkpoint_dir: Directory to save checkpoints
+            pairs_per_episode: Number of preference pairs to collect per episode
+            **kwargs: Additional arguments
+        """
+        # Initialize WandB if enabled
+        if use_wandb:
+            try:
+                wandb.init(
+                    project=wandb_project,
+                    config={
+                        "max_episodes": self.max_episodes,
+                        "beta": self.beta,
+                        "checkpoint_every": checkpoint_every,
+                        "earlystop_last": earlystop_last,
+                        "pairs_per_episode": pairs_per_episode,
+                    },
+                )
+            except ImportError:
+                warnings.warn("wandb not installed, skipping WandB logging")
+                use_wandb = False
+
+        # Create checkpoint directory
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Load latest checkpoint if exists
+        ckpt_pattern = os.path.join(checkpoint_dir, "dpo_checkpoint_*.pt")
+        ckpt_files = glob.glob(ckpt_pattern)
+        episode_start = 0
+        best_reward_diff = -float("inf")
+        if ckpt_files:
+            episodes = []
+            for f in ckpt_files:
+                try:
+                    ep = int(os.path.basename(f).split("_")[2].split(".")[0])
+                    episodes.append(ep)
+                except ValueError:
+                    pass
+            if episodes:
+                latest_episode = max(episodes)
+                ckpt_path = os.path.join(
+                    checkpoint_dir, f"dpo_checkpoint_{latest_episode}.pt"
+                )
+                checkpoint = torch.load(
+                    ckpt_path, map_location="cpu", weights_only=False
+                )
+                self.policy_model.load_state_dict(checkpoint["model_state_dict"])
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                if self.use_reference_policy:
+                    self.reference_policy.load_state_dict(
+                        checkpoint["reference_policy_state_dict"]
+                    )
+                episode_start = latest_episode + 1
+                best_reward_diff = checkpoint.get("best_reward_diff", -float("inf"))
+                print(f"Loaded checkpoint from episode {latest_episode}")
+
+        # Training loop
+        episode_reward_diffs = []
+        no_improvement_count = 0
+
+        for episode in range(episode_start, self.max_episodes):
+            # Collect preference pairs
+            (
+                preferred_prompts,
+                rejected_prompts,
+                preferred_rewards,
+                rejected_rewards,
+            ) = self._collect_preference_pairs(num_pairs=pairs_per_episode)
+
+            if len(preferred_prompts) == 0:
+                print(f"Episode {episode}: No valid preference pairs collected")
+                continue
+
+            # Convert prompts to observations using embedding model
+            preferred_obs_list = []
+            rejected_obs_list = []
+
+            for pref_prompt, rej_prompt in zip(preferred_prompts, rejected_prompts):
+                pref_embedding = self.env._embedding_model(pref_prompt).astype(
+                    np.float32
+                )
+                rej_embedding = self.env._embedding_model(rej_prompt).astype(np.float32)
+                preferred_obs_list.append(pref_embedding)
+                rejected_obs_list.append(rej_embedding)
+
+            # For simplicity, use action 0 (can be extended to track actual actions)
+            batch_size = len(preferred_prompts)
+            preferred_obs = torch.tensor(
+                np.stack(preferred_obs_list, axis=0), dtype=torch.float32
+            )
+            rejected_obs = torch.tensor(
+                np.stack(rejected_obs_list, axis=0), dtype=torch.float32
+            )
+
+            # Add sequence dimension for compatibility with policy model
+            preferred_obs = preferred_obs.unsqueeze(1)  # (batch, 1, obs_dim)
+            rejected_obs = rejected_obs.unsqueeze(1)  # (batch, 1, obs_dim)
+
+            # For prompt augmentation, the "action" is implicit in the augmentation
+            # We use action 0 as a placeholder
+            preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+            rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+            preferred_masks = torch.ones(batch_size, 1, dtype=torch.float32)
+            rejected_masks = torch.ones(batch_size, 1, dtype=torch.float32)
+
+            # Update policy using DPO loss
+            dpo_loss, reward_diff = self.update(
+                preferred_obs,
+                rejected_obs,
+                preferred_actions,
+                rejected_actions,
+                preferred_masks,
+                rejected_masks,
+            )
+
+            # Track metrics
+            episode_reward_diffs.append(reward_diff)
+
+            # Check for improvement (early stopping)
+            mean_reward_diff = np.mean(
+                episode_reward_diffs[-min(100, len(episode_reward_diffs)) :]
+            )
+
+            if mean_reward_diff > best_reward_diff:
+                best_reward_diff = mean_reward_diff
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
+
+            # Logging
+            if use_wandb:
+                mean_preferred_reward = float(np.mean(preferred_rewards))
+                mean_rejected_reward = float(np.mean(rejected_rewards))
+                wandb.log(
+                    {
+                        "episode": episode,
+                        "dpo_loss": dpo_loss,
+                        "reward_diff": reward_diff,
+                        "mean_reward_diff_100": mean_reward_diff,
+                        "best_reward_diff": best_reward_diff,
+                        "mean_preferred_reward": mean_preferred_reward,
+                        "mean_rejected_reward": mean_rejected_reward,
+                        "pairs_collected": len(preferred_prompts),
+                    }
+                )
+
+            print(
+                f"Episode {episode}: loss={dpo_loss:.4f}, reward_diff={reward_diff:.4f}, "
+                f"mean_diff_100={mean_reward_diff:.4f}"
+            )
+
+            # Checkpointing
+            if (episode + 1) % checkpoint_every == 0:
+                ckpt_path = os.path.join(checkpoint_dir, f"dpo_checkpoint_{episode}.pt")
+                checkpoint_dict = {
+                    "episode": episode,
+                    "model_state_dict": self.policy_model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "best_reward_diff": best_reward_diff,
+                }
+                if self.use_reference_policy:
+                    checkpoint_dict["reference_policy_state_dict"] = (
+                        self.reference_policy.state_dict()
+                    )
+
+                torch.save(checkpoint_dict, ckpt_path)
+                print(f"Saved checkpoint: {ckpt_path}")
+
+            # Early stopping
+            if no_improvement_count >= earlystop_last:
+                print(f"Early stopping at episode {episode}")
+                break
+
+        if use_wandb:
+            wandb.finish()
+        print("done")

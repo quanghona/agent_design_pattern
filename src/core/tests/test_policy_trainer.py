@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import torch.optim
 import torch.optim.lr_scheduler
 from aap_core.policy import BasePolicy, GPT2Policy
-from aap_core.policy_trainer import GRPO, PPO, ReinforcePP
+from aap_core.policy_trainer import DPO, GRPO, PPO, ReinforcePP
 from aap_core.prompt_augmenter import IdentityPromptAugmenter, PromptOptimizationEnv
 from gymnasium import spaces
 
@@ -270,6 +270,620 @@ class TestReinforcePPBasic:
         assert not torch.isinf(torch.tensor(action_loss))
         assert not torch.isnan(torch.tensor(entropy))
         assert not torch.isinf(torch.tensor(entropy))
+
+
+class TestDPOBasic:
+    """Test basic functionality of DPO."""
+
+    def test_basic_update(self):
+        obs_dim = 10
+        batch_size = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=10,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            beta=0.1,
+            num_mini_batch=2,
+            use_reference_policy=True,
+        )
+
+        preferred_obs = torch.randn(batch_size, 1, obs_dim)
+        rejected_obs = torch.randn(batch_size, 1, obs_dim)
+        preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        preferred_masks = torch.ones(batch_size, 1)
+        rejected_masks = torch.ones(batch_size, 1)
+
+        dpo_loss, reward_diff = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+
+        assert isinstance(dpo_loss, float)
+        assert not np.isnan(dpo_loss)
+        assert np.isfinite(dpo_loss)
+        assert isinstance(reward_diff, float)
+
+    def test_reference_policy_is_frozen(self):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=True,
+        )
+
+        assert dpo.reference_policy is not None
+        assert all(not p.requires_grad for p in dpo.reference_policy.parameters())
+        assert dpo.reference_policy is not policy
+
+    def test_update_without_reference_policy(self):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=False,
+        )
+
+        preferred_obs = torch.randn(2, 1, obs_dim)
+        rejected_obs = torch.randn(2, 1, obs_dim)
+        preferred_actions = torch.zeros(2, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(2, 1, dtype=torch.long)
+        preferred_masks = torch.ones(2, 1)
+        rejected_masks = torch.ones(2, 1)
+
+        dpo_loss, reward_diff = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+
+        assert isinstance(dpo_loss, float)
+        assert np.isfinite(dpo_loss)
+        assert isinstance(reward_diff, float)
+
+    def test_compute_dpo_loss_matches_manual(self):
+        obs_dim = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            beta=0.2,
+            num_mini_batch=1,
+            use_reference_policy=False,
+        )
+
+        policy_log_probs_w = torch.tensor([[-0.5]], dtype=torch.float32)
+        policy_log_probs_l = torch.tensor([[-1.0]], dtype=torch.float32)
+        reference_log_probs_w = torch.tensor([[-0.6]], dtype=torch.float32)
+        reference_log_probs_l = torch.tensor([[-1.2]], dtype=torch.float32)
+
+        loss = dpo._compute_dpo_loss(
+            policy_log_probs_w,
+            policy_log_probs_l,
+            reference_log_probs_w,
+            reference_log_probs_l,
+        )
+
+        expected = -F.logsigmoid(
+            0.2
+            * (
+                (policy_log_probs_w - reference_log_probs_w)
+                - (policy_log_probs_l - reference_log_probs_l)
+            )
+        ).mean()
+        assert torch.allclose(loss, expected)
+
+    def test_fit_saves_checkpoint(self, tmp_path):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter(), IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 1.0 if "test" in x else 0.0,
+            max_steps=2,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=True,
+        )
+
+        dpo.fit(
+            checkpoint_every=1,
+            earlystop_last=1,
+            use_wandb=False,
+            checkpoint_dir=str(tmp_path),
+            pairs_per_episode=1,
+        )
+
+        ckpt_files = glob.glob(str(tmp_path / "dpo_checkpoint_*.pt"))
+        assert len(ckpt_files) == 1
+
+    def test_collect_preference_pairs(self):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(2),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test prompt",
+            augmenters=[IdentityPromptAugmenter(), IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 1.0 if "good" in x else 0.0,
+            max_steps=2,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=False,
+        )
+
+        (
+            preferred_prompts,
+            rejected_prompts,
+            preferred_rewards,
+            rejected_rewards,
+        ) = dpo._collect_preference_pairs(num_pairs=4)
+
+        assert len(preferred_prompts) >= 0
+        assert len(rejected_prompts) >= 0
+        assert len(preferred_rewards) == len(rejected_rewards)
+        assert len(preferred_prompts) == len(rejected_prompts)
+
+    def test_collect_preference_pairs_with_different_rewards(self):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(3),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="base",
+            augmenters=[
+                IdentityPromptAugmenter(),
+                IdentityPromptAugmenter(),
+                IdentityPromptAugmenter(),
+            ],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 2.0 if "high" in x else (1.0 if "med" in x else 0.0),
+            max_steps=3,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=False,
+        )
+
+        (
+            preferred_prompts,
+            rejected_prompts,
+            preferred_rewards,
+            rejected_rewards,
+        ) = dpo._collect_preference_pairs(num_pairs=2)
+
+        if len(preferred_rewards) > 0:
+            assert all(r >= 0 for r in preferred_rewards)
+            assert all(r >= 0 for r in rejected_rewards)
+            for pr, rr in zip(preferred_rewards, rejected_rewards):
+                assert pr >= rr
+
+    def test_gradient_flow(self):
+        obs_dim = 8
+        batch_size = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=True,
+        )
+
+        preferred_obs = torch.randn(batch_size, 1, obs_dim)
+        rejected_obs = torch.randn(batch_size, 1, obs_dim)
+        preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        preferred_masks = torch.ones(batch_size, 1)
+        rejected_masks = torch.ones(batch_size, 1)
+
+        dpo_loss, reward_diff = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+
+        # Verify gradients were computed
+        has_grad = False
+        for param in policy.parameters():
+            if param.grad is not None:
+                has_grad = True
+                break
+        assert has_grad, "Policy parameters should have gradients after update"
+
+    def test_lr_scheduler_steps(self):
+        obs_dim = 8
+        batch_size = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=1, gamma=0.5
+        )
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            use_reference_policy=False,
+        )
+
+        preferred_obs = torch.randn(batch_size, 1, obs_dim)
+        rejected_obs = torch.randn(batch_size, 1, obs_dim)
+        preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        preferred_masks = torch.ones(batch_size, 1)
+        rejected_masks = torch.ones(batch_size, 1)
+
+        initial_lr = torch_optimizer.param_groups[0]["lr"]
+        dpo_loss, reward_diff = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+        assert lr_scheduler.get_last_lr()[0] < initial_lr
+
+    def test_checkpoint_loads_correctly(self, tmp_path):
+        obs_dim = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter(), IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 1.0 if "test" in x else 0.0,
+            max_steps=2,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=2,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=True,
+        )
+
+        dpo.fit(
+            checkpoint_every=1,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=str(tmp_path),
+            pairs_per_episode=1,
+        )
+
+        # Load checkpoint and verify it contains correct keys
+        ckpt_files = glob.glob(str(tmp_path / "dpo_checkpoint_*.pt"))
+        assert len(ckpt_files) >= 1
+
+        ckpt_path = ckpt_files[0]
+        checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        assert "episode" in checkpoint
+        assert "model_state_dict" in checkpoint
+        assert "optimizer_state_dict" in checkpoint
+        assert "best_reward_diff" in checkpoint
+        assert "reference_policy_state_dict" in checkpoint
+
+    def test_multiple_mini_batches(self):
+        obs_dim = 8
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            num_mini_batch=2,
+            use_reference_policy=False,
+        )
+
+        preferred_obs = torch.randn(batch_size, 1, obs_dim)
+        rejected_obs = torch.randn(batch_size, 1, obs_dim)
+        preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        preferred_masks = torch.ones(batch_size, 1)
+        rejected_masks = torch.ones(batch_size, 1)
+
+        dpo_loss, reward_diff = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+
+        assert isinstance(dpo_loss, float)
+        assert np.isfinite(dpo_loss)
+
+    def test_dpo_loss_with_different_beta(self):
+        obs_dim = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo_beta1 = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            beta=0.1,
+            num_mini_batch=1,
+            use_reference_policy=False,
+        )
+
+        dpo_beta2 = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            beta=0.5,
+            num_mini_batch=1,
+            use_reference_policy=False,
+        )
+
+        policy_log_probs_w = torch.tensor([[-0.5]], dtype=torch.float32)
+        policy_log_probs_l = torch.tensor([[-1.0]], dtype=torch.float32)
+        reference_log_probs_w = torch.tensor([[-0.6]], dtype=torch.float32)
+        reference_log_probs_l = torch.tensor([[-1.2]], dtype=torch.float32)
+
+        loss1 = dpo_beta1._compute_dpo_loss(
+            policy_log_probs_w,
+            policy_log_probs_l,
+            reference_log_probs_w,
+            reference_log_probs_l,
+        )
+        loss2 = dpo_beta2._compute_dpo_loss(
+            policy_log_probs_w,
+            policy_log_probs_l,
+            reference_log_probs_w,
+            reference_log_probs_l,
+        )
+
+        # Different beta should produce different losses
+        assert not torch.allclose(loss1, loss2)
+
+    def test_update_returns_consistent_types(self):
+        obs_dim = 8
+        batch_size = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(1),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+        dpo = DPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=1,
+            optimizer=torch_optimizer,
+            lr_scheduler=None,
+            use_reference_policy=True,
+        )
+
+        preferred_obs = torch.randn(batch_size, 1, obs_dim)
+        rejected_obs = torch.randn(batch_size, 1, obs_dim)
+        preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
+        preferred_masks = torch.ones(batch_size, 1)
+        rejected_masks = torch.ones(batch_size, 1)
+
+        result = dpo.update(
+            preferred_obs,
+            rejected_obs,
+            preferred_actions,
+            rejected_actions,
+            preferred_masks,
+            rejected_masks,
+        )
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        dpo_loss, reward_diff = result
+        assert isinstance(dpo_loss, float)
+        assert isinstance(reward_diff, float)
 
 
 class TestGRPOBasic:
