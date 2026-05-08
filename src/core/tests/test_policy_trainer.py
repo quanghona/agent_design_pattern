@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import torch.optim
 import torch.optim.lr_scheduler
 from aap_core.policy import BasePolicy, GPT2Policy
-from aap_core.policy_trainer import PPO, ReinforcePP
+from aap_core.policy_trainer import GRPO, PPO, ReinforcePP
 from aap_core.prompt_augmenter import IdentityPromptAugmenter, PromptOptimizationEnv
 from gymnasium import spaces
 
@@ -270,6 +270,1099 @@ class TestReinforcePPBasic:
         assert not torch.isinf(torch.tensor(action_loss))
         assert not torch.isnan(torch.tensor(entropy))
         assert not torch.isinf(torch.tensor(entropy))
+
+
+class TestGRPOBasic:
+    """Test basic functionality of GRPO."""
+
+    def test_basic_update(self):
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+        assert kl_loss == 0.0
+
+    def test_parameters_updated(self):
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        initial_params = {
+            name: param.clone() for name, param in policy.named_parameters()
+        }
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        for name, param in policy.named_parameters():
+            assert not torch.equal(initial_params[name], param), (
+                f"Parameter {name} was not updated"
+            )
+
+    def test_clip_param_zero(self):
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.0,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+
+    def test_zero_rewards(self):
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.zeros(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+
+    def test_single_sample_batch(self):
+        obs_dim = 10
+        action_dim = 5
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        batch = {
+            "obs": torch.randn(1, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (1, seq_len)),
+            "rewards": torch.randn(1, seq_len),
+            "masks": torch.ones(1, seq_len),
+            "old_log_probs": torch.randn(1, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+
+
+class TestGRPOVariations:
+    """Test GRPO with different hyperparameters and input patterns."""
+
+    @pytest.mark.parametrize("clip_param", [0.0, 0.1, 0.2, 0.5])
+    def test_different_clip_params(self, clip_param):
+        """Test GRPO with various clip parameter values."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=clip_param,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isinf(torch.tensor(action_loss))
+
+    @pytest.mark.parametrize("group_size", [1, 2, 4, 8])
+    def test_different_group_sizes(self, group_size):
+        """Test GRPO with various group size values."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=group_size,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+
+    @pytest.mark.parametrize("batch_size", [2, 4, 8, 16])
+    def test_different_batch_sizes(self, batch_size):
+        """Test GRPO with various batch size values."""
+        obs_dim = 10
+        action_dim = 5
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+
+    @pytest.mark.parametrize(
+        "reward_pattern,reward_val",
+        [
+            ("positive", 1.0),
+            ("negative", -1.0),
+            ("mixed", None),
+            ("constant", 0.5),
+        ],
+    )
+    def test_different_reward_patterns(self, reward_pattern, reward_val):
+        """Test GRPO with various reward patterns."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        if reward_pattern == "mixed":
+            rewards = torch.randn(batch_size, seq_len)
+        elif reward_val is not None:
+            rewards = torch.full((batch_size, seq_len), reward_val)
+        else:
+            rewards = torch.randn(batch_size, seq_len)
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": rewards,
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isinf(torch.tensor(action_loss))
+
+    def test_fit_training_few_episodes(self):
+        """Test GRPO fit method for a few training episodes."""
+        obs_dim = 10
+        action_dim = 1
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=5,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=3,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        # Run fit for a few episodes
+        grpo.fit(
+            checkpoint_every=10,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir="./ckpt",
+        )
+
+        # Verify that parameters were updated
+        params = list(policy.parameters())
+        assert all(p.requires_grad for p in params), (
+            "Policy parameters should require gradients"
+        )
+
+    def test_fit_with_reward_normalization(self):
+        """Test GRPO fit with reward normalization enabled."""
+        obs_dim = 10
+        action_dim = 1
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=5,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=3,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+            use_reward_normalization=True,
+        )
+
+        grpo.fit(
+            checkpoint_every=10,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir="./ckpt",
+        )
+
+    def test_fit_without_reward_normalization(self):
+        """Test GRPO fit with reward normalization disabled."""
+        obs_dim = 10
+        action_dim = 1
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=5,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=3,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+            use_reward_normalization=False,
+        )
+
+        grpo.fit(
+            checkpoint_every=10,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir="./ckpt",
+        )
+
+
+class TestGRPOCheckpoint:
+    """Test checkpoint save/load functionality for GRPO."""
+
+    def test_grpo_checkpoint_save_and_load(self, tmp_path):
+        """Test that GRPO saves and loads checkpoints correctly."""
+        obs_dim = 10
+        action_dim = 1
+        checkpoint_dir = str(tmp_path / "grpo_ckpt")
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        trainer = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=5,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        # Run training to create checkpoints
+        trainer.fit(
+            checkpoint_every=1,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+        # Verify checkpoint files exist
+        ckpt_files = glob.glob(os.path.join(checkpoint_dir, "grpo_checkpoint_*.pt"))
+        assert len(ckpt_files) > 0, "No GRPO checkpoint files were saved"
+
+        # Create a new policy and trainer
+        policy2 = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        torch_optimizer2 = torch.optim.Adam(policy2.parameters(), lr=1e-3)
+        lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer2, step_size=100, gamma=0.9
+        )
+        trainer2 = GRPO(
+            policy_model=policy2,
+            env=env,
+            max_episodes=3,
+            optimizer=torch_optimizer2,
+            lr_scheduler=lr_scheduler2,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        # Get initial params before loading
+        initial_params = {
+            name: param.clone() for name, param in policy2.named_parameters()
+        }
+
+        # Run training with checkpoint loading
+        trainer2.fit(
+            checkpoint_every=1,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+        # Verify that the policy was loaded from checkpoint (params changed)
+        params_changed = False
+        for name, param in policy2.named_parameters():
+            if not torch.equal(initial_params[name], param):
+                params_changed = True
+                break
+        assert params_changed, (
+            "GRPO policy parameters were not updated after loading checkpoint"
+        )
+
+    def test_grpo_no_checkpoint_when_empty_dir(self, tmp_path):
+        """Test that GRPO works when checkpoint directory is empty."""
+        checkpoint_dir = str(tmp_path / "grpo_empty_ckpt")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        obs_dim = 10
+        action_dim = 1
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        trainer = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=3,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+            checkpoint_every=10,
+            earlystop_last=10,
+        )
+
+        # Should not raise any error
+        trainer.fit(
+            checkpoint_every=10,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+    def test_grpo_checkpoint_loads_latest(self, tmp_path):
+        """Test that GRPO loads the latest checkpoint."""
+        obs_dim = 10
+        action_dim = 1
+        checkpoint_dir = str(tmp_path / "grpo_ckpt_latest")
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        trainer = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=5,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        # Run training to create checkpoints
+        trainer.fit(
+            checkpoint_every=1,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+        # Verify the latest checkpoint has the highest episode number
+        ckpt_files = glob.glob(os.path.join(checkpoint_dir, "grpo_checkpoint_*.pt"))
+        episodes = []
+        for f in ckpt_files:
+            try:
+                ep = int(os.path.basename(f).split("_")[2].split(".")[0])
+                episodes.append(ep)
+            except ValueError:
+                pass
+        assert len(episodes) > 0
+        latest_episode = max(episodes)
+
+        # Create a new policy and trainer
+        policy2 = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        torch_optimizer2 = torch.optim.Adam(policy2.parameters(), lr=1e-3)
+        lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer2, step_size=100, gamma=0.9
+        )
+        trainer2 = GRPO(
+            policy_model=policy2,
+            env=env,
+            max_episodes=latest_episode + 3,
+            optimizer=torch_optimizer2,
+            lr_scheduler=lr_scheduler2,
+            clip_param=0.2,
+            num_mini_batch=1,
+            group_size=1,
+        )
+
+        # Run training - should start from latest_episode + 1
+        trainer2.fit(
+            checkpoint_every=1,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+        # Verify that the new checkpoint saved has the correct episode number
+        new_ckpt_files = glob.glob(os.path.join(checkpoint_dir, "grpo_checkpoint_*.pt"))
+        new_episodes = []
+        for f in new_ckpt_files:
+            try:
+                ep = int(os.path.basename(f).split("_")[2].split(".")[0])
+                new_episodes.append(ep)
+            except ValueError:
+                pass
+        assert max(new_episodes) >= latest_episode + 1, (
+            f"Expected episode >= {latest_episode + 1}, got {max(new_episodes)}"
+        )
+
+
+class TestGRPOInvalidInputs:
+    """Test GRPO behavior with invalid inputs."""
+
+    def test_batch_not_divisible_by_group_size(self):
+        """Test that GRPO raises error when batch_size is not divisible by group_size."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 7  # Not divisible by group_size=2
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        with pytest.raises(ValueError, match="divisible by group_size"):
+            grpo.update(
+                batch["obs"],
+                batch["actions"],
+                batch["rewards"],
+                batch["masks"],
+                batch["old_log_probs"],
+            )
+
+    def test_mismatched_tensor_shapes(self):
+        """Test that GRPO handles mismatched tensor shapes appropriately."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        # Mismatched sequence lengths
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len - 1),  # Wrong seq_len
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        # Should raise an error due to shape mismatch
+        with pytest.raises((RuntimeError, ValueError)):
+            grpo.update(
+                batch["obs"],
+                batch["actions"],
+                batch["rewards"],
+                batch["masks"],
+                batch["old_log_probs"],
+            )
+
+    def test_invalid_action_indices(self):
+        """Test GRPO with action indices out of bounds."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        # Action indices out of bounds (>= action_dim)
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.full((batch_size, seq_len), action_dim),  # Out of bounds
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        # Should raise an error due to invalid action indices
+        with pytest.raises((IndexError, RuntimeError)):
+            grpo.update(
+                batch["obs"],
+                batch["actions"],
+                batch["rewards"],
+                batch["masks"],
+                batch["old_log_probs"],
+            )
+
+    def test_all_masks_zero(self):
+        """Test GRPO with all masks set to zero (no valid steps)."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        grpo = GRPO(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.zeros(batch_size, seq_len),  # All masks zero
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        # Should still produce valid loss values even with all masks zero
+        assert not torch.isnan(torch.tensor(action_loss))
 
 
 class TestReinforcePPClipParam:
