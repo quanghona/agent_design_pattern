@@ -9,8 +9,6 @@ import os
 import shutil
 import sys
 import tempfile
-import warnings
-from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -67,37 +65,6 @@ class SimplePolicy(BasePolicy):
         entropy = -(log_probs.exp() * log_probs).sum(dim=-1)
         values = torch.zeros(batch_size, seq_len, device=obs.device)
         return values, action_log_probs, entropy, logits
-
-
-def _create_dummy_state_dict(n_layer=4, n_embd=64, n_head=4):
-    """Create a complete dummy state dict for GPT2Policy."""
-    state_dict = {
-        "obs_projection.weight": torch.randn(n_embd, n_embd),
-        "obs_projection.bias": torch.randn(n_embd),
-        "pos_embeddings.weight": torch.randn(64, n_embd),
-    }
-
-    # Add blocks
-    for i in range(n_layer):
-        state_dict[f"blocks.{i}.attn.c_attn.weight"] = torch.randn(3 * n_embd, n_embd)
-        state_dict[f"blocks.{i}.attn.c_attn.bias"] = torch.randn(3 * n_embd)
-        state_dict[f"blocks.{i}.attn.c_proj.weight"] = torch.randn(n_embd, n_embd)
-        state_dict[f"blocks.{i}.attn.c_proj.bias"] = torch.randn(n_embd)
-        state_dict[f"blocks.{i}.ln_1.weight"] = torch.randn(n_embd)
-        state_dict[f"blocks.{i}.ln_1.bias"] = torch.randn(n_embd)
-        state_dict[f"blocks.{i}.ln_2.weight"] = torch.randn(n_embd)
-        state_dict[f"blocks.{i}.ln_2.bias"] = torch.randn(n_embd)
-        state_dict[f"blocks.{i}.mlp.c_fc.weight"] = torch.randn(4 * n_embd, n_embd)
-        state_dict[f"blocks.{i}.mlp.c_fc.bias"] = torch.randn(4 * n_embd)
-        state_dict[f"blocks.{i}.mlp.c_proj.weight"] = torch.randn(n_embd, 4 * n_embd)
-        state_dict[f"blocks.{i}.mlp.c_proj.bias"] = torch.randn(n_embd)
-
-    state_dict["ln_f.weight"] = torch.randn(n_embd)
-    state_dict["ln_f.bias"] = torch.randn(n_embd)
-    state_dict["action_head.weight"] = torch.randn(2, n_embd)
-    state_dict["action_head.bias"] = torch.randn(2)
-
-    return state_dict
 
 
 # ──────────────────────────────────────────────
@@ -222,9 +189,7 @@ class TestRLPromptAugmenterAugment:
         assert isinstance(result, AgentMessage)
         assert result.query == msg.query or isinstance(result.query, str)
 
-    def test_augment_terminated_early(
-        self, embedding_model, reward_model, augmenters
-    ):
+    def test_augment_terminated_early(self, embedding_model, reward_model, augmenters):
         """Augment handles episodes that terminate early."""
 
         def high_reward(prompt: str) -> float:
@@ -348,7 +313,9 @@ class TestRLPromptAugmenterIntegration:
 
     def test_env_with_zero_augmenters_raises(self, embedding_model, reward_model):
         """Environment with 0 augmenters should raise AssertionError."""
-        with pytest.raises(AssertionError, match="At least one augmenter must be provided"):
+        with pytest.raises(
+            AssertionError, match="At least one augmenter must be provided"
+        ):
             PromptOptimizationEnv(
                 initial_prompt="test",
                 augmenters=[],
@@ -356,6 +323,837 @@ class TestRLPromptAugmenterIntegration:
                 reward_model=reward_model,
                 max_steps=2,
             )
+
+
+# ──────────────────────────────────────────────
+# GPT2Policy Tests
+# ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def gpt2_policy_small(env):
+    """Return a small GPT2Policy (1 layer) for testing."""
+    return GPT2Policy(
+        env.action_space,
+        env.observation_space,
+        n_layer=1,
+        n_head=2,
+        n_embd=32,
+        block_size=8,
+        embd_pdrop=0.0,
+        resid_pdrop=0.0,
+        attn_pdrop=0.0,
+    )
+
+
+@pytest.fixture
+def gpt2_policy_default(env):
+    """Return a default GPT2Policy (4 layers) for testing."""
+    return GPT2Policy(
+        env.action_space,
+        env.observation_space,
+        n_layer=4,
+        n_head=4,
+        n_embd=128,
+    )
+
+
+@pytest.fixture
+def gpt2_rl_augmenter_small(env, gpt2_policy_small):
+    """Return an RLPromptAugmenter with small GPT2Policy."""
+    return RLPromptAugmenter(env=env, policy_model=gpt2_policy_small)
+
+
+@pytest.fixture
+def gpt2_rl_augmenter_default(env, gpt2_policy_default):
+    """Return an RLPromptAugmenter with default GPT2Policy."""
+    return RLPromptAugmenter(env=env, policy_model=gpt2_policy_default)
+
+
+class TestGPT2PolicyIntegration:
+    """Tests for RLPromptAugmenter with GPT2Policy."""
+
+    def test_gpt2_policy_inference_small(self, gpt2_rl_augmenter_small):
+        """GPT2Policy with 1 layer works for inference."""
+        msg = AgentMessage(query="test prompt")
+        result = gpt2_rl_augmenter_small.augment(msg)
+        assert isinstance(result, AgentMessage)
+        assert hasattr(result, "query")
+
+    def test_gpt2_policy_inference_default(self, gpt2_rl_augmenter_default):
+        """GPT2Policy with default config works for inference."""
+        msg = AgentMessage(query="test prompt")
+        result = gpt2_rl_augmenter_default.augment(msg)
+        assert isinstance(result, AgentMessage)
+        assert hasattr(result, "query")
+
+    def test_gpt2_policy_forward(self, gpt2_policy_small, env):
+        """GPT2Policy forward pass produces correct output shape."""
+        obs = torch.randn(4, env.observation_space.shape[0])
+        logits = gpt2_policy_small(obs)
+        assert logits.shape == (4, 1, env.action_space.n)
+
+    def test_gpt2_policy_forward_batched(self, gpt2_policy_small, env):
+        """GPT2Policy forward pass with batched input."""
+        obs = torch.randn(8, 2, env.observation_space.shape[0])
+        logits = gpt2_policy_small(obs)
+        assert logits.shape == (8, 2, env.action_space.n)
+
+    def test_gpt2_policy_evaluate_actions(self, gpt2_policy_small, env):
+        """GPT2Policy evaluate_actions returns correct shapes."""
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, env.observation_space.shape[0])
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = gpt2_policy_small.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert action_log_probs.shape == (batch_size, seq_len)
+        assert entropy.shape == (batch_size, seq_len)
+        assert logits.shape == (batch_size, seq_len, env.action_space.n)
+
+    def test_gpt2_policy_evaluate_actions_1d(self, gpt2_policy_small, env):
+        """GPT2Policy evaluate_actions with 1D inputs."""
+        batch_size = 4
+        obs = torch.randn(batch_size, env.observation_space.shape[0])
+        actions = torch.randint(0, env.action_space.n, (batch_size,))
+        masks = torch.ones(batch_size)
+
+        values, action_log_probs, entropy, logits = gpt2_policy_small.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, 1)
+        assert action_log_probs.shape == (batch_size, 1)
+        assert entropy.shape == (batch_size, 1)
+        assert logits.shape == (batch_size, 1, env.action_space.n)
+
+    def test_gpt2_policy_with_many_augmenters(self, embedding_model, reward_model):
+        """GPT2Policy works with many augmenters (large action space)."""
+        augmenters = [IdentityPromptAugmenter() for _ in range(20)]
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_deterministic_action(self, gpt2_policy_small, env):
+        """GPT2Policy get_action with deterministic=True returns argmax."""
+        obs = torch.randn(4, env.observation_space.shape[0])
+        logits = gpt2_policy_small(obs)
+        action, log_prob = gpt2_policy_small.get_action(
+            logits.squeeze(1), deterministic=True
+        )
+        expected = torch.argmax(logits.squeeze(1), dim=-1)
+        assert torch.equal(action, expected)
+
+    def test_gpt2_policy_stochastic_action(self, gpt2_policy_small, env):
+        """GPT2Policy get_action with deterministic=False returns sampled action."""
+        torch.manual_seed(42)
+        obs = torch.randn(4, env.observation_space.shape[0])
+        logits = gpt2_policy_small(obs)
+        action, log_prob = gpt2_policy_small.get_action(
+            logits.squeeze(1), deterministic=False
+        )
+        assert action.shape == (4,)
+        assert log_prob.shape == (4,)
+        assert all(0 <= a < env.action_space.n for a in action.tolist())
+
+    def test_gpt2_policy_save_load(self, gpt2_policy_small, temp_dir):
+        """GPT2Policy can be saved and loaded."""
+        path = os.path.join(temp_dir, "policy.pt")
+        gpt2_policy_small.save(path)
+
+        new_policy = GPT2Policy(
+            gpt2_policy_small.action_space,
+            gpt2_policy_small.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+        )
+        new_policy.load(path)
+
+        # Compare state dicts directly to avoid device mismatches
+        for name, param in gpt2_policy_small.named_parameters():
+            assert torch.allclose(
+                param,
+                new_policy.state_dict()[name],
+                atol=1e-6,
+            ), f"Mismatch in {name}"
+
+    def test_gpt2_policy_with_value_head(self, env):
+        """GPT2Policy with value head produces non-zero values."""
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            use_value_head=True,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, env.observation_space.shape[0])
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert not torch.allclose(values, torch.zeros_like(values))
+
+    def test_gpt2_policy_different_embedding_dims(self, reward_model):
+        """GPT2Policy works with different embedding dimensions."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(256).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=64,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        obs = torch.randn(2, 256)
+        logits = policy(obs)
+        assert logits.shape == (2, 1, 1)
+
+    def test_gpt2_policy_inference_with_different_prompts(
+        self, gpt2_rl_augmenter_small
+    ):
+        """GPT2Policy inference works with various prompt types."""
+        prompts = ["short", "a longer prompt with more context", ""]
+        for prompt in prompts:
+            msg = AgentMessage(query=prompt)
+            result = gpt2_rl_augmenter_small.augment(msg)
+            assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_parameter_count(self, gpt2_policy_small):
+        """GPT2Policy has reasonable parameter count."""
+        param_count = sum(p.numel() for p in gpt2_policy_small.parameters())
+        assert param_count > 0
+        # Small 1-layer policy should have < 100k params
+        assert param_count < 100_000
+
+
+# ──────────────────────────────────────────────
+# Embedding Dimension Tests
+# ──────────────────────────────────────────────
+
+
+class TestEmbeddingDimensionIntegration:
+    """Tests for RLPromptAugmenter with various embedding dimensions."""
+
+    def test_simple_policy_small_embedding(self, reward_model):
+        """SimplePolicy works with small embedding dimension (16)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = SimplePolicy(env.action_space, env.observation_space)
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_simple_policy_large_embedding(self, reward_model):
+        """SimplePolicy works with large embedding dimension (768)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = SimplePolicy(env.action_space, env.observation_space)
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_small_embedding(self, reward_model):
+        """GPT2Policy works with small embedding dimension (16)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_medium_embedding(self, reward_model):
+        """GPT2Policy works with medium embedding dimension (128)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(128).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=64,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_large_embedding(self, reward_model):
+        """GPT2Policy works with large embedding dimension (768)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_forward_small_embedding(self, reward_model):
+        """GPT2Policy forward pass with small embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        obs = torch.randn(4, 16)
+        logits = policy(obs)
+        assert logits.shape == (4, 1, 1)
+
+    def test_gpt2_policy_forward_large_embedding(self, reward_model):
+        """GPT2Policy forward pass with large embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        obs = torch.randn(4, 768)
+        logits = policy(obs)
+        assert logits.shape == (4, 1, 1)
+
+    def test_gpt2_policy_evaluate_actions_small_embedding(self, reward_model):
+        """GPT2Policy evaluate_actions with small embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, 16)
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert action_log_probs.shape == (batch_size, seq_len)
+        assert entropy.shape == (batch_size, seq_len)
+        assert logits.shape == (batch_size, seq_len, env.action_space.n)
+
+    def test_gpt2_policy_evaluate_actions_large_embedding(self, reward_model):
+        """GPT2Policy evaluate_actions with large embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, 768)
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert action_log_probs.shape == (batch_size, seq_len)
+        assert entropy.shape == (batch_size, seq_len)
+        assert logits.shape == (batch_size, seq_len, env.action_space.n)
+
+    def test_gpt2_policy_save_load_small_embedding(self, reward_model, temp_dir):
+        """GPT2Policy save/load works with small embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+
+        path = os.path.join(temp_dir, "policy_small_emb.pt")
+        policy.save(path)
+
+        new_policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+        )
+        new_policy.load(path)
+
+        for name, param in policy.named_parameters():
+            assert torch.allclose(
+                param,
+                new_policy.state_dict()[name],
+                atol=1e-6,
+            ), f"Mismatch in {name}"
+
+    def test_gpt2_policy_save_load_large_embedding(self, reward_model, temp_dir):
+        """GPT2Policy save/load works with large embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+
+        path = os.path.join(temp_dir, "policy_large_emb.pt")
+        policy.save(path)
+
+        new_policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+        )
+        new_policy.load(path)
+
+        for name, param in policy.named_parameters():
+            assert torch.allclose(
+                param,
+                new_policy.state_dict()[name],
+                atol=1e-6,
+            ), f"Mismatch in {name}"
+
+    def test_gpt2_policy_with_many_augmenters_small_embedding(self, reward_model):
+        """GPT2Policy with many augmenters and small embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        augmenters = [IdentityPromptAugmenter() for _ in range(20)]
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_with_many_augmenters_large_embedding(self, reward_model):
+        """GPT2Policy with many augmenters and large embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        augmenters = [IdentityPromptAugmenter() for _ in range(20)]
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_with_value_head_small_embedding(self, reward_model):
+        """GPT2Policy with value head and small embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(16).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            use_value_head=True,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, 16)
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert not torch.allclose(values, torch.zeros_like(values))
+
+    def test_gpt2_policy_with_value_head_large_embedding(self, reward_model):
+        """GPT2Policy with value head and large embedding dimension."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(768).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=128,
+            block_size=8,
+            use_value_head=True,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, 768)
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert not torch.allclose(values, torch.zeros_like(values))
+
+    def test_gpt2_policy_extreme_small_embedding(self, reward_model):
+        """GPT2Policy with extreme small embedding dimension (1)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(1).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        obs = torch.randn(4, 1)
+        logits = policy(obs)
+        assert logits.shape == (4, 1, 1)
+
+    def test_simple_policy_extreme_small_embedding(self, reward_model):
+        """SimplePolicy with extreme small embedding dimension (1)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(1).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = SimplePolicy(env.action_space, env.observation_space)
+        aug = RLPromptAugmenter(env=env, policy_model=policy)
+        msg = AgentMessage(query="test")
+        result = aug.augment(msg)
+        assert isinstance(result, AgentMessage)
+
+    def test_gpt2_policy_evaluate_actions_extreme_small_embedding(self, reward_model):
+        """GPT2Policy evaluate_actions with extreme small embedding dimension (1)."""
+
+        def embedding_model(prompt: str) -> np.ndarray:
+            return np.random.randn(1).astype(np.float32)
+
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=2,
+        )
+        policy = GPT2Policy(
+            env.action_space,
+            env.observation_space,
+            n_layer=1,
+            n_head=2,
+            n_embd=32,
+            block_size=8,
+            embd_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        batch_size = 4
+        seq_len = 2
+        obs = torch.randn(batch_size, seq_len, 1)
+        actions = torch.randint(0, env.action_space.n, (batch_size, seq_len))
+        masks = torch.ones(batch_size, seq_len)
+
+        values, action_log_probs, entropy, logits = policy.evaluate_actions(
+            obs, actions, masks
+        )
+
+        assert values.shape == (batch_size, seq_len)
+        assert action_log_probs.shape == (batch_size, seq_len)
+        assert entropy.shape == (batch_size, seq_len)
+        assert logits.shape == (batch_size, seq_len, env.action_space.n)
 
 
 if __name__ == "__main__":
