@@ -2,7 +2,7 @@ import glob
 import os
 import warnings
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,6 +15,150 @@ from aap_core.prompt_augmenter import PromptOptimizationEnv
 from aap_core.types import AgentMessage
 
 
+class BaseExplorationModule(ABC):
+    """Abstract base class for exploration strategies in policy training.
+
+    This class defines the interface for exploration modules that determine
+    whether the policy should explore (sample stochastically) or exploit
+    (select greedy actions) at each step during episode rollout.
+
+    The exploration module is used during the ``fit()`` method's environment
+    interaction loop, NOT during the gradient update step.
+
+    Example usage with a custom module::
+
+        class MyExploration(BaseExplorationModule):
+            def should_explore(self, step: int, episode: int, **kwargs) -> bool:
+                return torch.rand(1).item() > 0.5
+
+            def get_exploration_config(self) -> dict:
+                return {"strategy": "my_custom"}
+
+    Example usage with torchRL::
+
+        from torchrl.envs import EpsilonGreedyActionSelection
+
+        class TorchRLWrapper(BaseExplorationModule):
+            def __init__(self, torchrl_exploration):
+                self._exploration = torchrl_exploration
+
+            def should_explore(self, step: int, episode: int, **kwargs) -> bool:
+                return self._exploration.step()
+
+            def get_exploration_config(self) -> dict:
+                return {"source": "torchrl"}
+
+    """
+
+    @abstractmethod
+    def should_explore(self, step: int, episode: int, **kwargs) -> bool:
+        """Determine whether to explore at the current step.
+
+        Args:
+            step: Current step index within the episode (0-based).
+            episode: Current episode index (0-based).
+            **kwargs: Additional context (e.g., ``'obs'``, ``'logits'``, ``'info'``).
+
+        Returns:
+            ``True`` if the policy should explore (sample stochastically),
+            ``False`` if it should exploit (select greedy action).
+        """
+        pass
+
+    @abstractmethod
+    def get_exploration_config(self) -> Dict[str, Any]:
+        """Return a dictionary of exploration hyperparameters for logging.
+
+        Returns:
+            Dictionary of configuration parameters (e.g., epsilon, temperature).
+        """
+        pass
+
+    def reset(self, episode: int) -> None:
+        """Reset exploration state at the beginning of an episode.
+
+        Override this method if the exploration strategy needs per-episode
+        state (e.g., resetting an epsilon schedule).
+
+        Args:
+            episode: Current episode index (0-based).
+        """
+        pass
+
+
+class EpsilonGreedyExploration(BaseExplorationModule):
+    """Epsilon-greedy exploration with linear decay.
+
+    Explores with probability epsilon, exploits with probability 1-epsilon.
+    Epsilon decays linearly from ``eps_init`` to ``eps_final`` over
+    ``decay_episodes``.
+
+    Args:
+        eps_init: Initial exploration probability (default ``1.0``).
+        eps_final: Final exploration probability after decay (default ``0.05``).
+        decay_episodes: Number of episodes over which to decay epsilon
+            (default ``1000``).
+        min_eps: Minimum epsilon floor (default ``0.01``).
+    """
+
+    def __init__(
+        self,
+        eps_init: float = 1.0,
+        eps_final: float = 0.05,
+        decay_episodes: int = 1000,
+        min_eps: float = 0.01,
+    ) -> None:
+        self.eps_init = eps_init
+        self.eps_final = max(eps_final, min_eps)
+        self.decay_episodes = max(1, decay_episodes)
+        self.current_eps: float = eps_init
+
+    def should_explore(self, step: int, episode: int, **kwargs) -> bool:
+        # Linear decay
+        progress = min(episode / self.decay_episodes, 1.0)
+        self.current_eps = self.eps_final + (self.eps_init - self.eps_final) * (
+            1.0 - progress
+        )
+        self.current_eps = max(self.current_eps, self.eps_final)
+        return torch.rand(1).item() < self.current_eps
+
+    def get_exploration_config(self) -> Dict[str, Any]:
+        return {
+            "eps_init": self.eps_init,
+            "eps_final": self.eps_final,
+            "decay_episodes": self.decay_episodes,
+            "current_eps": self.current_eps,
+        }
+
+
+class RandomExploration(EpsilonGreedyExploration):
+    """Convenience class for constant explore/exploit ratio (no decay).
+
+    This is a special case of EpsilonGreedyExploration where ``eps_init``
+    equals ``eps_final``, resulting in a constant exploration probability
+    regardless of the episode number. Useful for fixed exploration ratios.
+
+    Args:
+        explore_ratio: Probability of exploring (default ``0.0``).
+    """
+
+    def __init__(self, explore_ratio: float = 0.0) -> None:
+        # Initialize with no decay: eps_init = eps_final = explore_ratio
+        # Pass min_eps=0 to allow true 0% exploration (unlike EpsilonGreedyExploration)
+        super().__init__(
+            eps_init=explore_ratio,
+            eps_final=explore_ratio,
+            decay_episodes=1,  # Not used since eps_init == eps_final
+            min_eps=0.0,  # Allow ratios from 0.0 to 1.0
+        )
+        # Store explore_ratio for direct access
+        self.explore_ratio = explore_ratio
+
+    def get_exploration_config(self) -> Dict[str, Any]:
+        # Override to report explore_ratio for clarity
+        return {"explore_ratio": self.explore_ratio}
+
+
 class BasePolicyTrainer(ABC):
     def __init__(
         self,
@@ -23,7 +167,7 @@ class BasePolicyTrainer(ABC):
         max_episodes: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        exploration_module=None,
+        exploration_module: Optional[BaseExplorationModule] = None,
         replay_buffer=None,
         eps: float = 1e-8,
     ):
@@ -33,16 +177,18 @@ class BasePolicyTrainer(ABC):
         self.max_episodes = max_episodes
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
-        self.exploration_module = exploration_module
         self.replay_buffer = replay_buffer  # Placeholder for potential replay buffer
         self.eps = eps
+
+        # Set up exploration module: default to pure exploit
+        self.exploration_module = exploration_module or RandomExploration()
 
     @abstractmethod
     def fit(self, **kwargs):
         pass
 
 
-class ReinforcePP(BasePolicyTrainer):
+class ReinforcePPTrainer(BasePolicyTrainer):
     """
     REINFORCE++: A Simple and Efficient Approach for Aligning Large Language Models.
 
@@ -64,7 +210,7 @@ class ReinforcePP(BasePolicyTrainer):
         max_episodes: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        exploration_module=None,
+        exploration_module: Optional[BaseExplorationModule] = None,
         replay_buffer=None,
         clip_param: float = 0.2,
         num_mini_batch: int = 4,
@@ -378,6 +524,7 @@ class ReinforcePP(BasePolicyTrainer):
         for episode in range(episode_start, self.max_episodes):
             # Reset environment
             obs, info = self.env.reset()
+            self.exploration_module.reset(episode)
             episode_reward = 0.0
             episode_data = {
                 "observations": [],
@@ -399,19 +546,19 @@ class ReinforcePP(BasePolicyTrainer):
                     torch.tensor(obs, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 )
 
-                # Get action from policy
+                # Get action from policy with exploration
                 with torch.no_grad():
                     logits = self.policy_model(obs_tensor)
-                    # Extract action from policy output using helper method
-                    action_tensor, _ = self.policy_model.get_action(logits)
-                    action = int(action_tensor.item())
-
-                    # For logging: compute log prob of the selected action
-                    last_logits = logits[:, -1, :]
-                    log_probs_dist = torch.nn.functional.log_softmax(
-                        last_logits, dim=-1
+                    # Determine whether to explore or exploit
+                    should_explore = self.exploration_module.should_explore(
+                        step=step_count, episode=episode
                     )
-                    log_prob = log_probs_dist[0, action].item()
+                    # Extract action from policy output using helper method
+                    action_tensor, log_prob = self.policy_model.get_action(
+                        logits, deterministic=not should_explore
+                    )
+                    action = int(action_tensor.item())
+                    log_prob = log_prob[0].item()
 
                 # Take step in environment
                 next_obs, reward, done, truncated, info = self.env.step(action)
@@ -500,7 +647,7 @@ class ReinforcePP(BasePolicyTrainer):
         print("done")
 
 
-class GRPO(BasePolicyTrainer):
+class GRPOTrainer(BasePolicyTrainer):
     """Group Relative Policy Optimization trainer.
 
     This trainer implements a critic-free, group-relative advantage approach
@@ -518,7 +665,7 @@ class GRPO(BasePolicyTrainer):
         max_episodes: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        exploration_module=None,
+        exploration_module: Optional[BaseExplorationModule] = None,
         replay_buffer=None,
         clip_param: float = 0.2,
         num_mini_batch: int = 4,
@@ -719,6 +866,7 @@ class GRPO(BasePolicyTrainer):
 
         for episode in range(episode_start, self.max_episodes):
             obs, _ = self.env.reset()
+            self.exploration_module.reset(episode)
             episode_reward = 0.0
             episode_data = {
                 "observations": [],
@@ -738,7 +886,13 @@ class GRPO(BasePolicyTrainer):
                 )
                 with torch.no_grad():
                     logits = self.policy_model(obs_tensor)
-                    action_tensor, _ = self.policy_model.get_action(logits)
+                    # Determine whether to explore or exploit
+                    should_explore = self.exploration_module.should_explore(
+                        step=step_count, episode=episode
+                    )
+                    action_tensor, log_prob = self.policy_model.get_action(
+                        logits, deterministic=not should_explore
+                    )
                     _, action_log_probs, _, _ = self.policy_model.evaluate_actions(
                         obs_tensor,
                         action_tensor,
@@ -746,7 +900,7 @@ class GRPO(BasePolicyTrainer):
                     )
 
                 action = int(action_tensor.item())
-                log_prob = action_log_probs[0].item()
+                log_prob = log_prob[0].item()
 
                 next_obs, reward, done, truncated, _ = self.env.step(action)
 
@@ -830,7 +984,7 @@ class GRPO(BasePolicyTrainer):
         print("done")
 
 
-class PPO(BasePolicyTrainer):
+class PPOTrainer(BasePolicyTrainer):
     def __init__(
         self,
         actor_critic: BasePolicy,
@@ -841,7 +995,7 @@ class PPO(BasePolicyTrainer):
         num_mini_batch,
         value_loss_coef,
         entropy_coef,
-        exploration_module=None,
+        exploration_module: Optional[BaseExplorationModule] = None,
         replay_buffer=None,
         clip_param=0.2,
         max_grad_norm: float = 1.0,
@@ -1062,6 +1216,7 @@ class PPO(BasePolicyTrainer):
 
         for episode in range(episode_start, self.max_episodes):
             obs, _ = self.env.reset()
+            self.exploration_module.reset(episode)
             episode_reward = 0.0
             episode_data = {
                 "observations": [],
@@ -1083,7 +1238,13 @@ class PPO(BasePolicyTrainer):
                 )
                 with torch.no_grad():
                     logits = self.policy_model(obs_tensor)
-                    action_tensor, _ = self.policy_model.get_action(logits)
+                    # Determine whether to explore or exploit
+                    should_explore = self.exploration_module.should_explore(
+                        step=step_count, episode=episode
+                    )
+                    action_tensor, log_prob = self.policy_model.get_action(
+                        logits, deterministic=not should_explore
+                    )
                     values, action_log_probs, _, _ = self.policy_model.evaluate_actions(
                         obs_tensor,
                         action_tensor,
@@ -1091,7 +1252,7 @@ class PPO(BasePolicyTrainer):
                     )
 
                 action = int(action_tensor.item())
-                log_prob = action_log_probs[0].item()
+                log_prob = log_prob[0].item()
                 value = values[0].item()
 
                 next_obs, reward, done, truncated, _ = self.env.step(action)
@@ -1189,7 +1350,7 @@ class PPO(BasePolicyTrainer):
         print("done")
 
 
-class DPO(BasePolicyTrainer):
+class DPOTrainer(BasePolicyTrainer):
     """Direct Preference Optimization (DPO) trainer for prompt augmentation.
 
     DPO is a parameter-efficient and computationally efficient approach to optimize
@@ -1231,7 +1392,7 @@ class DPO(BasePolicyTrainer):
         max_episodes: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        exploration_module=None,
+        exploration_module: Optional[BaseExplorationModule] = None,
         replay_buffer=None,
         beta: float = 0.1,
         num_mini_batch: int = 4,

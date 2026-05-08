@@ -11,7 +11,12 @@ import torch.nn.functional as F
 import torch.optim
 import torch.optim.lr_scheduler
 from aap_core.policy import BasePolicy, GPT2Policy
-from aap_core.policy_trainer import DPO, GRPO, PPO, ReinforcePP
+from aap_core.policy_trainer import (
+    DPOTrainer,
+    GRPOTrainer,
+    PPOTrainer,
+    ReinforcePPTrainer,
+)
 from aap_core.prompt_augmenter import IdentityPromptAugmenter, PromptOptimizationEnv
 from gymnasium import spaces
 
@@ -123,7 +128,7 @@ class TestReinforcePPBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        reinforce_pp = ReinforcePP(
+        reinforce_pp = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -179,7 +184,7 @@ class TestReinforcePPBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        reinforce_pp = ReinforcePP(
+        reinforce_pp = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -238,7 +243,7 @@ class TestReinforcePPBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        reinforce_pp = ReinforcePP(
+        reinforce_pp = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -297,7 +302,7 @@ class TestDPOBasic:
             torch_optimizer, step_size=100, gamma=0.9
         )
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=10,
@@ -347,7 +352,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -378,7 +383,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -425,7 +430,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -475,7 +480,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -513,7 +518,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -556,7 +561,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -597,7 +602,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -652,7 +657,7 @@ class TestDPOBasic:
             torch_optimizer, step_size=1, gamma=0.5
         )
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -697,7 +702,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=2,
@@ -745,7 +750,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -792,7 +797,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo_beta1 = DPO(
+        dpo_beta1 = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -803,7 +808,7 @@ class TestDPOBasic:
             use_reference_policy=False,
         )
 
-        dpo_beta2 = DPO(
+        dpo_beta2 = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -854,7 +859,7 @@ class TestDPOBasic:
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        dpo = DPO(
+        dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
@@ -912,7 +917,7 @@ class TestGRPOBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -966,7 +971,7 @@ class TestGRPOBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1025,7 +1030,7 @@ class TestGRPOBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1077,7 +1082,7 @@ class TestGRPOBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1128,7 +1133,7 @@ class TestGRPOBasic:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1186,7 +1191,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1241,7 +1246,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1294,7 +1299,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1356,7 +1361,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1415,7 +1420,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=3,
@@ -1462,7 +1467,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=3,
@@ -1503,7 +1508,7 @@ class TestGRPOVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=3,
@@ -1549,7 +1554,7 @@ class TestGRPOCheckpoint:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = GRPO(
+        trainer = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=5,
@@ -1583,7 +1588,7 @@ class TestGRPOCheckpoint:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = GRPO(
+        trainer2 = GRPOTrainer(
             policy_model=policy2,
             env=env,
             max_episodes=3,
@@ -1642,7 +1647,7 @@ class TestGRPOCheckpoint:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = GRPO(
+        trainer = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=3,
@@ -1686,7 +1691,7 @@ class TestGRPOCheckpoint:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = GRPO(
+        trainer = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=5,
@@ -1728,7 +1733,7 @@ class TestGRPOCheckpoint:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = GRPO(
+        trainer2 = GRPOTrainer(
             policy_model=policy2,
             env=env,
             max_episodes=latest_episode + 3,
@@ -1788,7 +1793,7 @@ class TestGRPOInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1840,7 +1845,7 @@ class TestGRPOInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1894,7 +1899,7 @@ class TestGRPOInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -1948,7 +1953,7 @@ class TestGRPOInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        grpo = GRPO(
+        grpo = GRPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2006,7 +2011,7 @@ class TestReinforcePPClipParam:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2060,7 +2065,7 @@ class TestReinforcePPClipParam:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2114,7 +2119,7 @@ class TestReinforcePPClipParam:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2172,7 +2177,7 @@ class TestReinforcePPZeroValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2226,7 +2231,7 @@ class TestReinforcePPZeroValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2279,7 +2284,7 @@ class TestReinforcePPZeroValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2332,7 +2337,7 @@ class TestReinforcePPZeroValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2390,7 +2395,7 @@ class TestReinforcePPRewardNormalization:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2445,7 +2450,7 @@ class TestReinforcePPRewardNormalization:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2504,7 +2509,7 @@ class TestReinforcePPRewardNormalization:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2559,7 +2564,7 @@ class TestReinforcePPRewardNormalization:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2614,7 +2619,7 @@ class TestReinforcePPRewardNormalization:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2673,7 +2678,7 @@ class TestReinforcePPKLLoss:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2730,7 +2735,7 @@ class TestReinforcePPKLLoss:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2785,7 +2790,7 @@ class TestReinforcePPKLLoss:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2846,7 +2851,7 @@ class TestReinforcePPBatchSequenceVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2900,7 +2905,7 @@ class TestReinforcePPBatchSequenceVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -2954,7 +2959,7 @@ class TestReinforcePPBatchSequenceVariations:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3012,7 +3017,7 @@ class TestReinforcePPGradientClipping:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3067,7 +3072,7 @@ class TestReinforcePPGradientClipping:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3126,7 +3131,7 @@ class TestReinforcePPMultiLayer:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3181,7 +3186,7 @@ class TestReinforcePPMultiLayer:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3239,7 +3244,7 @@ class TestReinforcePPEntropy:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer_high_entropy = ReinforcePP(
+        optimizer_high_entropy = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3249,7 +3254,7 @@ class TestReinforcePPEntropy:
             num_mini_batch=2,
             entropy_coef=0.1,
         )
-        optimizer_low_entropy = ReinforcePP(
+        optimizer_low_entropy = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3313,7 +3318,7 @@ class TestReinforcePPEntropy:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3372,7 +3377,7 @@ class TestReinforcePPLearningRate:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3426,7 +3431,7 @@ class TestReinforcePPLearningRate:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3484,7 +3489,7 @@ class TestReinforcePPEpochsAndBatches:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3538,7 +3543,7 @@ class TestReinforcePPEpochsAndBatches:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3592,7 +3597,7 @@ class TestReinforcePPEpochsAndBatches:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3646,7 +3651,7 @@ class TestReinforcePPEpochsAndBatches:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3704,7 +3709,7 @@ class TestReinforcePPWithProvidedValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3761,7 +3766,7 @@ class TestReinforcePPWithProvidedValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3818,7 +3823,7 @@ class TestReinforcePPWithProvidedValues:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3879,7 +3884,7 @@ class TestReinforcePPNoOldLogProbs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3936,7 +3941,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -3990,7 +3995,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4044,7 +4049,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4098,7 +4103,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4152,7 +4157,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4207,7 +4212,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4261,7 +4266,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4316,7 +4321,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4371,7 +4376,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4428,7 +4433,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4482,7 +4487,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4536,7 +4541,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4590,7 +4595,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4644,7 +4649,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4698,7 +4703,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4752,7 +4757,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4806,7 +4811,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4860,7 +4865,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4914,7 +4919,7 @@ class TestReinforcePPInvalidInputs:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -4972,7 +4977,7 @@ class TestReinforcePPObservationOptional:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5248,7 +5253,7 @@ class TestGPT2PolicyReinforcePP:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5304,7 +5309,7 @@ class TestGPT2PolicyReinforcePP:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5371,7 +5376,7 @@ class TestGPT2PolicyReinforcePP:
             reward_model=lambda x: 0.0,
             max_steps=10,
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5430,7 +5435,7 @@ class TestGPT2PolicyReinforcePP:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5490,7 +5495,7 @@ class TestGPT2PolicyReinforcePP:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        optimizer = ReinforcePP(
+        optimizer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=100,
@@ -5757,7 +5762,7 @@ class TestPPOKLLoss:
         env = self.DummyEnv(obs_dim)
         optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-        trainer = PPO(
+        trainer = PPOTrainer(
             policy,
             env,
             max_episodes=1,
@@ -5800,7 +5805,7 @@ class TestReinforcePPCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = ReinforcePP(
+        trainer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=5,
@@ -5833,7 +5838,7 @@ class TestReinforcePPCheckpointLoading:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = ReinforcePP(
+        trainer2 = ReinforcePPTrainer(
             policy_model=policy2,
             env=env,
             max_episodes=3,
@@ -5891,7 +5896,7 @@ class TestReinforcePPCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = ReinforcePP(
+        trainer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=3,
@@ -5933,7 +5938,7 @@ class TestReinforcePPCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = ReinforcePP(
+        trainer = ReinforcePPTrainer(
             policy_model=policy,
             env=env,
             max_episodes=5,
@@ -5974,7 +5979,7 @@ class TestReinforcePPCheckpointLoading:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = ReinforcePP(
+        trainer2 = ReinforcePPTrainer(
             policy_model=policy2,
             env=env,
             max_episodes=latest_episode
@@ -6034,7 +6039,7 @@ class TestPPOCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = PPO(
+        trainer = PPOTrainer(
             actor_critic=policy,
             env=env,
             max_episodes=5,
@@ -6068,7 +6073,7 @@ class TestPPOCheckpointLoading:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = PPO(
+        trainer2 = PPOTrainer(
             actor_critic=policy2,
             env=env,
             max_episodes=3,
@@ -6127,7 +6132,7 @@ class TestPPOCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = PPO(
+        trainer = PPOTrainer(
             actor_critic=policy,
             env=env,
             max_episodes=3,
@@ -6172,7 +6177,7 @@ class TestPPOCheckpointLoading:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             torch_optimizer, step_size=100, gamma=0.9
         )
-        trainer = PPO(
+        trainer = PPOTrainer(
             actor_critic=policy,
             env=env,
             max_episodes=5,
@@ -6214,7 +6219,7 @@ class TestPPOCheckpointLoading:
         lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
             torch_optimizer2, step_size=100, gamma=0.9
         )
-        trainer2 = PPO(
+        trainer2 = PPOTrainer(
             actor_critic=policy2,
             env=env,
             max_episodes=latest_episode
