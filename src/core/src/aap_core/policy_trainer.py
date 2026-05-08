@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import glob
 import os
 import warnings
 
@@ -341,12 +342,38 @@ class ReinforcePP(BasePolicyTrainer):
         # Create checkpoint directory
         os.makedirs(checkpoint_dir, exist_ok=True)
 
+        # Load latest checkpoint if exists
+        ckpt_pattern = os.path.join(checkpoint_dir, "checkpoint_*.pt")
+        ckpt_files = glob.glob(ckpt_pattern)
+        episode_start = 0
+        best_reward = -float("inf")
+        if ckpt_files:
+            episodes = []
+            for f in ckpt_files:
+                try:
+                    ep = int(os.path.basename(f).split("_")[1].split(".")[0])
+                    episodes.append(ep)
+                except ValueError:
+                    pass
+            if episodes:
+                latest_episode = max(episodes)
+                ckpt_path = os.path.join(
+                    checkpoint_dir, f"checkpoint_{latest_episode}.pt"
+                )
+                checkpoint = torch.load(
+                    ckpt_path, map_location="cpu", weights_only=False
+                )
+                self.policy_model.load_state_dict(checkpoint["model_state_dict"])
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                episode_start = latest_episode + 1
+                best_reward = checkpoint.get("best_reward", -float("inf"))
+                print(f"Loaded checkpoint from episode {latest_episode}")
+
         # Training loop
         episode_rewards = []
-        best_reward = -float("inf")
         no_improvement_count = 0
 
-        for episode in range(self.max_episodes):
+        for episode in range(episode_start, self.max_episodes):
             # Reset environment
             obs, info = self.env.reset()
             episode_reward = 0.0
@@ -551,8 +578,37 @@ class PPO(BasePolicyTrainer):
                 use_wandb = False
 
         os.makedirs(checkpoint_dir, exist_ok=True)
-        episode_rewards = []
+
+        # Load latest checkpoint if exists
+        ckpt_pattern = os.path.join(checkpoint_dir, "ppo_checkpoint_*.pt")
+        ckpt_files = glob.glob(ckpt_pattern)
+        episode_start = 0
         best_reward = -float("inf")
+        if ckpt_files:
+            episodes = []
+            for f in ckpt_files:
+                try:
+                    ep = int(
+                        os.path.basename(f).split("_")[2].split(".")[0]
+                    )  # ppo_checkpoint_{ep}.pt
+                    episodes.append(ep)
+                except ValueError:
+                    pass
+            if episodes:
+                latest_episode = max(episodes)
+                ckpt_path = os.path.join(
+                    checkpoint_dir, f"ppo_checkpoint_{latest_episode}.pt"
+                )
+                checkpoint = torch.load(
+                    ckpt_path, map_location="cpu", weights_only=False
+                )
+                self.policy_model.load_state_dict(checkpoint["model_state_dict"])
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                episode_start = latest_episode + 1
+                best_reward = checkpoint.get("best_reward", -float("inf"))
+                print(f"Loaded checkpoint from episode {latest_episode}")
+
+        episode_rewards = []
         no_improvement_count = 0
         value_loss_epoch = 0.0
         action_loss_epoch = 0.0
@@ -560,7 +616,7 @@ class PPO(BasePolicyTrainer):
         kl_loss_epoch = 0.0
         num_updates = 0
 
-        for episode in range(self.max_episodes):
+        for episode in range(episode_start, self.max_episodes):
             obs, _ = self.env.reset()
             episode_reward = 0.0
             episode_data = {
