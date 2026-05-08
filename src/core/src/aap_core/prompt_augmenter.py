@@ -1201,7 +1201,7 @@ class RLPromptAugmenter(BasePromptAugmenter):
                 action, action_log_prob = self.policy_model.get_action(logits)
 
             # Take step in environment
-            obs, reward, terminated, truncated, info = self.env.step(action.item())
+            obs, reward, terminated, truncated, info = self.env.step(int(action.item()))
             step_count += 1
 
             # Stop if episode terminated early
