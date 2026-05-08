@@ -507,6 +507,8 @@ class GRPO(BasePolicyTrainer):
     for prompt optimization. It uses groups of outputs sampled from the same
     prompt to compute relative advantages and optionally normalizes rewards
     within each group.
+
+    References: https://arxiv.org/pdf/2402.03300
     """
 
     def __init__(
@@ -870,6 +872,123 @@ class PPO(BasePolicyTrainer):
         self.kl_coef = kl_coef
         self.gamma = gamma
 
+    def update(
+        self,
+        obs,
+        actions,
+        rewards,
+        masks,
+        old_log_probs,
+        values,
+        returns,
+        old_logits,
+    ) -> Tuple[float, float, float, float]:
+        """Perform one update step of PPO.
+
+        Args:
+            obs: Observations
+            actions: Actions taken
+            rewards: Rewards received
+            masks: Binary masks for valid positions
+            old_log_probs: Previous log probabilities
+            values: Previous value predictions
+            returns: Computed returns
+            old_logits: Previous logits for KL loss computation
+
+        Returns:
+            Tuple of (value_loss, action_loss, dist_entropy, kl_loss)
+        """
+        advantages = returns - values
+        adv_std = advantages.std()
+        if adv_std > self.eps:
+            advantages = (advantages - advantages.mean()) / adv_std
+
+        value_loss_epoch = 0.0
+        action_loss_epoch = 0.0
+        dist_entropy_epoch = 0.0
+        kl_loss_epoch = 0.0
+        num_updates = 0
+
+        batch_size = rewards.size(0)
+        indices = torch.randperm(batch_size)
+
+        for i in range(0, batch_size, self.num_mini_batch):
+            batch_indices = indices[i : i + self.num_mini_batch]
+            obs_batch = obs[batch_indices].unsqueeze(1)
+            actions_batch = actions[batch_indices]
+            masks_batch = masks[batch_indices]
+            old_log_probs_batch = old_log_probs[batch_indices]
+            values_batch = values[batch_indices]
+            return_batch = returns[batch_indices]
+            adv_batch = advantages[batch_indices]
+
+            values_pred, action_log_probs, dist_entropy, logits = (
+                self.policy_model.evaluate_actions(
+                    obs_batch,
+                    actions_batch,
+                    masks_batch,
+                )
+            )
+
+            ratio = torch.exp(action_log_probs - old_log_probs_batch.unsqueeze(-1))
+            surr1 = ratio * adv_batch.unsqueeze(-1)
+            surr2 = torch.clamp(
+                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+            ) * adv_batch.unsqueeze(-1)
+            action_loss = -torch.min(surr1, surr2).mean()
+            kl_loss = torch.tensor(0.0, device=logits.device)
+
+            if self.use_kl_loss:
+                old_logits_batch = old_logits[batch_indices]
+                current_logits = logits.squeeze(1)
+                old_probs = F.softmax(old_logits_batch, dim=-1)
+                current_log_probs = F.log_softmax(current_logits, dim=-1)
+                kl_divergence = F.kl_div(
+                    current_log_probs,
+                    old_probs,
+                    reduction="none",
+                ).sum(dim=-1)
+                kl_loss = kl_divergence.mean()
+                action_loss = action_loss + self.kl_coef * kl_loss
+
+            if self.use_clipped_value_loss:
+                value_pred_clipped = values_batch + (values_pred - values_batch).clamp(
+                    -self.clip_param, self.clip_param
+                )
+                value_losses = (values_pred - return_batch).pow(2)
+                value_losses_clipped = (value_pred_clipped - return_batch).pow(2)
+                value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = 0.5 * (return_batch - values_pred).pow(2).mean()
+
+            loss = (
+                value_loss * self.value_loss_coef
+                + action_loss
+                - dist_entropy.mean() * self.entropy_coef
+            )
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+            value_loss_epoch += value_loss.item()
+            action_loss_epoch += action_loss.item()
+            dist_entropy_epoch += dist_entropy.mean().item()
+            if self.use_kl_loss:
+                kl_loss_epoch += kl_loss.item()
+            num_updates += 1
+
+        return (
+            value_loss_epoch / max(num_updates, 1),
+            action_loss_epoch / max(num_updates, 1),
+            dist_entropy_epoch / max(num_updates, 1),
+            kl_loss_epoch / max(num_updates, 1),
+        )
+
     def fit(
         self,
         checkpoint_every: int = 10,
@@ -940,11 +1059,6 @@ class PPO(BasePolicyTrainer):
 
         episode_rewards = []
         no_improvement_count = 0
-        value_loss_epoch = 0.0
-        action_loss_epoch = 0.0
-        dist_entropy_epoch = 0.0
-        kl_loss_epoch = 0.0
-        num_updates = 0
 
         for episode in range(episode_start, self.max_episodes):
             obs, _ = self.env.reset()
@@ -1015,87 +1129,16 @@ class PPO(BasePolicyTrainer):
                 )
                 returns[t] = cumulative_return
 
-            advantages = returns - values_tensor
-            adv_std = advantages.std()
-            if adv_std > self.eps:
-                advantages = (advantages - advantages.mean()) / adv_std
-
-            batch_size = rewards_tensor.size(0)
-            indices = torch.randperm(batch_size)
-
-            for i in range(0, batch_size, self.num_mini_batch):
-                batch_indices = indices[i : i + self.num_mini_batch]
-                obs_batch = obs_tensor[batch_indices].unsqueeze(1)
-                actions_batch = actions_tensor[batch_indices]
-                masks_batch = masks_tensor[batch_indices]
-                old_log_probs_batch = old_log_probs_tensor[batch_indices]
-                values_batch = values_tensor[batch_indices]
-                return_batch = returns[batch_indices]
-                adv_batch = advantages[batch_indices]
-
-                values_pred, action_log_probs, dist_entropy, logits = (
-                    self.policy_model.evaluate_actions(
-                        obs_batch,
-                        actions_batch,
-                        masks_batch,
-                    )
-                )
-
-                ratio = torch.exp(action_log_probs - old_log_probs_batch.unsqueeze(-1))
-                surr1 = ratio * adv_batch.unsqueeze(-1)
-                surr2 = torch.clamp(
-                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-                ) * adv_batch.unsqueeze(-1)
-                action_loss = -torch.min(surr1, surr2).mean()
-                kl_loss = torch.tensor(0.0, device=logits.device)
-
-                if self.use_kl_loss:
-                    old_logits_batch = old_logits_tensor[batch_indices]
-                    current_logits = logits.squeeze(1)
-                    old_probs = F.softmax(old_logits_batch, dim=-1)
-                    current_log_probs = F.log_softmax(current_logits, dim=-1)
-                    kl_divergence = F.kl_div(
-                        current_log_probs,
-                        old_probs,
-                        reduction="none",
-                    ).sum(dim=-1)
-                    kl_loss = kl_divergence.mean()
-                    action_loss = action_loss + self.kl_coef * kl_loss
-
-                if self.use_clipped_value_loss:
-                    value_pred_clipped = values_batch + (
-                        values_pred - values_batch
-                    ).clamp(-self.clip_param, self.clip_param)
-                    value_losses = (values_pred - return_batch).pow(2)
-                    value_losses_clipped = (value_pred_clipped - return_batch).pow(2)
-                    value_loss = (
-                        0.5 * torch.max(value_losses, value_losses_clipped).mean()
-                    )
-                else:
-                    value_loss = 0.5 * (return_batch - values_pred).pow(2).mean()
-
-                loss = (
-                    value_loss * self.value_loss_coef
-                    + action_loss
-                    - dist_entropy.mean() * self.entropy_coef
-                )
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(
-                    self.policy_model.parameters(), self.max_grad_norm
-                )
-                self.optimizer.step()
-
-                if self.lr_scheduler is not None:
-                    self.lr_scheduler.step()
-
-                value_loss_epoch += value_loss.item()
-                action_loss_epoch += action_loss.item()
-                dist_entropy_epoch += dist_entropy.mean().item()
-                if self.use_kl_loss:
-                    kl_loss_epoch += kl_loss.item()
-                num_updates += 1
+            value_loss, action_loss, dist_entropy, kl_loss = self.update(
+                obs_tensor,
+                actions_tensor,
+                rewards_tensor,
+                masks_tensor,
+                old_log_probs_tensor,
+                values_tensor,
+                returns,
+                old_logits_tensor,
+            )
 
             episode_rewards.append(episode_reward)
             mean_reward = np.mean(episode_rewards[-min(100, len(episode_rewards)) :])
@@ -1113,12 +1156,12 @@ class PPO(BasePolicyTrainer):
                     "mean_reward_100": mean_reward,
                     "best_reward": best_reward,
                     "steps": step_count,
-                    "value_loss": value_loss_epoch / max(num_updates, 1),
-                    "action_loss": action_loss_epoch / max(num_updates, 1),
-                    "dist_entropy": dist_entropy_epoch / max(num_updates, 1),
+                    "value_loss": value_loss,
+                    "action_loss": action_loss,
+                    "dist_entropy": dist_entropy,
                 }
                 if self.use_kl_loss:
-                    log_data["kl_loss"] = kl_loss_epoch / max(num_updates, 1)
+                    log_data["kl_loss"] = kl_loss
                 wandb.log(log_data)
             print(
                 f"Episode {episode}: reward={episode_reward:.4f}, mean_100={mean_reward:.4f}"
