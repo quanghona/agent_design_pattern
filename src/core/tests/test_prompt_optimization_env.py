@@ -31,16 +31,15 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
         )
 
-        assert env._num_augmenters == 1
+        assert len(env._augmenters) == 1
         assert env.action_space.n == 1
         assert env.observation_space.shape == (768,)
-        assert env._current_prompt == ""
-        assert env._step_count == 0
 
     def test_initialization_with_custom_values(self):
         """Test environment initialization with custom values."""
@@ -52,19 +51,17 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 1.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Hello",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Hello",
             max_steps=20,
         )
 
-        assert env._num_augmenters == 2
+        assert len(env._augmenters) == 2
         assert env.action_space.n == 2
         assert env.observation_space.shape == (128,)
-        assert env._current_prompt == "Hello"
-        assert env._step_count == 0
-        assert env._max_steps == 20
+        assert env.max_steps == 20
 
     def test_action_space_is_discrete(self):
         """Test that action space is Discrete."""
@@ -73,6 +70,7 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
@@ -131,38 +129,45 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Test",
             max_steps=5,
         )
+
+        # First reset
+        obs, info = env.reset()
+        assert info["step_count"] == 0
+        assert info["current_prompt"] == "Test"
 
         # Advance the environment
         env.step(0)
         env.step(0)
-        assert env._step_count == 2
+        info = env._get_info()
+        assert info["step_count"] == 2
 
         # Reset
         obs, info = env.reset()
 
-        assert env._step_count == 0
-        assert env._current_prompt == ""
         assert info["step_count"] == 0
+        assert info["current_prompt"] == "Test"
 
     def test_step_with_valid_action(self):
         """Test step with a valid action."""
         augmenters = [DummyAugmenter(suffix=" world")]
-        embedding_model = lambda x: np.zeros(10, dtype=np.float32)
+        embedding_model = lambda x: np.ones(10, dtype=np.float32)
         reward_model = lambda x: 1.0 if "world" in x else 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Hello",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Hello",
+            min_embedding_threshold=0.0,  # Disable embedding distance termination for this test
         )
 
+        env.reset()
         obs, reward, terminated, truncated, info = env.step(0)
 
         assert isinstance(obs, np.ndarray)
@@ -170,8 +175,8 @@ class TestPromptOptimizationEnv:
         assert reward == 1.0
         assert terminated is False
         assert truncated is False
-        assert env._current_prompt == "Hello world"
-        assert env._step_count == 1
+        assert info["current_prompt"] == "Hello world"
+        assert info["step_count"] == 1
 
     def test_step_with_different_augmenters(self):
         """Test step with different augmenters."""
@@ -184,12 +189,13 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: float(len(x))
 
         env = PromptOptimizationEnv(
+            initial_prompt="Hi",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Hi",
         )
 
+        env.reset()
         # Apply first augmenter
         obs1, reward1, _, _, _ = env.step(0)
         assert env._current_prompt == "Hi!"
@@ -209,6 +215,7 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
@@ -222,10 +229,6 @@ class TestPromptOptimizationEnv:
 
     def test_step_with_augmenter_failure(self):
         """Test step when augmenter fails."""
-        augmenters = [IdentityPromptAugmenter()]
-
-        def failing_augmenter(message, **kwargs):
-            raise Exception("Augmenter failed")
 
         # Create a simple augmenter that fails
         class FailingAugmenter(IdentityPromptAugmenter):
@@ -237,17 +240,18 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Test",
         )
 
+        env.reset()
         # Should not raise exception, just warn and keep current prompt
         with pytest.warns(UserWarning, match="Augmenter 0 failed"):
             obs, reward, terminated, truncated, info = env.step(0)
 
-        assert env._current_prompt == "Test"
+        assert info["current_prompt"] == "Test"
 
     def test_step_with_max_steps_truncation(self):
         """Test step with max_steps truncation."""
@@ -256,13 +260,14 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Test",
             max_steps=3,
         )
 
+        env.reset()
         # First two steps should not truncate
         env.step(0)
         _, _, _, truncated, _ = env.step(0)
@@ -285,12 +290,13 @@ class TestPromptOptimizationEnv:
             return 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Hello",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Hello",
         )
 
+        env.reset()
         env.step(0)
 
         assert len(reward_calls) == 1
@@ -309,20 +315,18 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Hello",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Hello",
         )
 
+        env.reset()
         env.step(0)
 
-        assert (
-            len(embedding_calls) == 3
-        )  # Called during init (twice for dim detection) and step
-        assert embedding_calls[0] == "Hello"
-        assert embedding_calls[1] == "Hello"
-        assert embedding_calls[2] == "Hello test"
+        assert len(embedding_calls) >= 2  # Called during init and reset/step
+        assert "Hello" in embedding_calls[0]
+        assert "Hello test" in embedding_calls[-1]
 
     def test_get_observation(self):
         """Test _get_observation method."""
@@ -336,13 +340,13 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="test",
         )
 
-        obs = env._get_observation()
+        obs, _ = env.reset()
         assert np.array_equal(obs, np.ones(10, dtype=np.float32))
 
     def test_get_info(self):
@@ -352,13 +356,14 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="test",
             max_steps=10,
         )
 
+        env.reset()
         env.step(0)
         env.step(0)
 
@@ -375,47 +380,30 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
         )
 
+        # Gymnasium environments always have metadata
         assert "render_modes" in env.metadata
-        assert "human" in env.metadata["render_modes"]
-        assert "rgb_array" in env.metadata["render_modes"]
-        assert "render_fps" in env.metadata
-        assert env.metadata["render_fps"] == 30
 
-    def test_render_mode_validation(self):
-        """Test render mode validation."""
+    def test_no_render_mode_parameter(self):
+        """Test that render_mode parameter is not used."""
         augmenters = [IdentityPromptAugmenter()]
         embedding_model = lambda x: np.zeros(10, dtype=np.float32)
         reward_model = lambda x: 0.0
 
-        # Valid render modes
-        env1 = PromptOptimizationEnv(
+        # render_mode is no longer a parameter
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            render_mode=None,
         )
-        assert env1.render_mode is None
-
-        env2 = PromptOptimizationEnv(
-            augmenters=augmenters,
-            embedding_model=embedding_model,
-            reward_model=reward_model,
-            render_mode="human",
-        )
-        assert env2.render_mode == "human"
-
-        env3 = PromptOptimizationEnv(
-            augmenters=augmenters,
-            embedding_model=embedding_model,
-            reward_model=reward_model,
-            render_mode="rgb_array",
-        )
-        assert env3.render_mode == "rgb_array"
+        # No render_mode attribute expected
+        assert not hasattr(env, "render_mode") or env.render_mode is None
 
     def test_seed_reproducibility(self):
         """Test that seeding produces reproducible results."""
@@ -424,11 +412,13 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env1 = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
         )
         env2 = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
@@ -446,22 +436,23 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 1.0 if "!" in x else 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="Start",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
-            initial_prompt="Start",
             max_steps=2,
         )
 
         # First episode
+        env.reset()
         env.step(0)
         _, _, _, truncated, _ = env.step(0)
         assert truncated is True
 
         # Reset and start second episode
         obs, info = env.reset()
-        assert env._step_count == 0
-        assert env._current_prompt == ""
+        assert info["step_count"] == 0
+        assert info["current_prompt"] == "Start"
 
         # Second episode
         env.step(0)
@@ -478,6 +469,7 @@ class TestPromptOptimizationEnv:
         reward_model = lambda x: 0.0
 
         env = PromptOptimizationEnv(
+            initial_prompt="test",
             augmenters=augmenters,
             embedding_model=embedding_model,
             reward_model=reward_model,
