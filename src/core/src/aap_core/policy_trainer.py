@@ -754,7 +754,7 @@ class RandomExploration(EpsilonGreedyExploration):
     regardless of the episode number. Useful for fixed exploration ratios.
 
     Args:
-        explore_ratio: Probability of exploring (default ``0.0``).
+        explore_ratio: Probability of exploring (default ``0.0``, pure exploit).
     """
 
     def __init__(self, explore_ratio: float = 0.0) -> None:
@@ -1607,17 +1607,17 @@ class PPOTrainer(BasePolicyTrainer):
         max_episodes: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-        num_mini_batch,
-        value_loss_coef,
-        entropy_coef,
+        num_mini_batch: int,
+        value_loss_coef: float,
+        entropy_coef: float,
         exploration_module: Optional[BaseExplorationModule] = None,
-        clip_param=0.2,
+        clip_param: float = 0.2,
         max_grad_norm: float = 1.0,
-        use_clipped_value_loss=True,
+        use_clipped_value_loss: bool = True,
         use_kl_loss: bool = False,
         kl_coef: float = 1e-5,
         gamma: float = 0.99,
-        eps=1e-8,
+        eps: float = 1e-8,
         **kwargs,
     ):
         # PPO is an on-policy algorithm: trajectories are collected from the
