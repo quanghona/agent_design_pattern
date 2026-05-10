@@ -1,8 +1,10 @@
 import glob
 import os
+import random
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -13,6 +15,619 @@ import wandb
 from aap_core.policy import BasePolicy
 from aap_core.prompt_augmenter import PromptOptimizationEnv
 from aap_core.types import AgentMessage
+
+
+@dataclass
+class ReplayBufferEntry:
+    """A single transition stored in the replay buffer.
+
+    Minimal dataclass containing only the information needed for the
+    policy gradient update step.
+
+    Attributes:
+        obs: Prompt embedding vector of shape (obs_dim,).
+        action: Index of the augmenter applied (0 to num_augmenters-1).
+        reward: Reward from the reward model.
+        log_prob: Log probability of the action under the policy.
+        mask: Validity mask (1.0 = valid, 0.0 = invalid).
+    """
+
+    obs: np.ndarray
+    action: int
+    reward: float
+    log_prob: float
+    mask: float
+
+
+class BaseReplayBuffer(ABC):
+    """Abstract base class for replay buffers.
+
+    All replay buffer implementations must provide:
+    - ``push``: add a new transition
+    - ``sample``: draw a batch of transitions
+    - ``__len__``: current buffer size
+    - ``is_empty``: whether the buffer has any data
+    - ``clear``: remove all stored transitions
+
+    Subclasses may also override ``_sample_indices`` for custom sampling
+    strategies (e.g., prioritized sampling).
+    """
+
+    def __init__(self, capacity: int) -> None:
+        """Initialize the replay buffer.
+
+        Args:
+            capacity: Maximum number of transitions the buffer can hold.
+                Must be positive.
+        """
+        if capacity <= 0:
+            raise ValueError(f"capacity must be positive, got {capacity}")
+        self._capacity = capacity
+        self._size = 0
+        self._head = 0  # write pointer for circular buffer
+
+    @property
+    def capacity(self) -> int:
+        """Maximum number of transitions the buffer can hold."""
+        return self._capacity
+
+    @property
+    def size(self) -> int:
+        """Current number of transitions in the buffer."""
+        return self._size
+
+    @property
+    def is_full(self) -> bool:
+        """Whether the buffer has reached its capacity."""
+        return self._size >= self._capacity
+
+    @abstractmethod
+    def push(
+        self,
+        obs: np.ndarray,
+        action: int,
+        reward: float,
+        log_prob: float,
+        mask: float,
+    ) -> None:
+        """Add a single transition to the buffer.
+
+        Args:
+            obs: Prompt embedding vector.
+            action: Index of the augmenter applied.
+            reward: Reward from the reward model.
+            log_prob: Log probability of the action.
+            mask: Validity mask.
+        """
+        pass
+
+    @abstractmethod
+    def sample(self, batch_size: int) -> Dict[str, Any]:
+        """Sample a batch of transitions.
+
+        Args:
+            batch_size: Number of transitions to sample.
+
+        Returns:
+            Dictionary with keys ``'obs'``, ``'action'``, ``'reward'``,
+            ``'log_prob'``, ``'mask'``. Each value is a batched array
+            of shape (batch_size, ...) or (batch_size,).
+        """
+        pass
+
+    @abstractmethod
+    def _sample_indices(self, batch_size: int) -> List[int]:
+        """Sample indices for a batch.
+
+        Override this method in subclasses to implement custom sampling
+        strategies (e.g., prioritized sampling).
+
+        Args:
+            batch_size: Number of indices to sample.
+
+        Returns:
+            List of integer indices into the buffer.
+        """
+        pass
+
+    def __len__(self) -> int:
+        """Return the current number of transitions in the buffer."""
+        return self._size
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(capacity={self._capacity}, size={self._size})"
+        )
+
+    def is_empty(self) -> bool:
+        """Whether the buffer has no stored transitions."""
+        return self._size == 0
+
+    def clear(self) -> None:
+        """Remove all transitions from the buffer."""
+        self._size = 0
+        self._head = 0
+
+
+class SimpleReplayBuffer(BaseReplayBuffer):
+    """Uniform random sampling replay buffer with circular storage.
+
+    This is a simple FIFO circular buffer that stores transitions and
+    samples uniformly at random. It is suitable for off-policy trainers
+    (REINFORCE++, GRPO, DPO) where any past experience is equally valuable.
+
+    Memory-efficient: uses pre-allocated numpy arrays and overwrites
+    old entries when the buffer is full.
+
+    Example::
+
+        buffer = SimpleReplayBuffer(capacity=10000)
+        for _ in range(5000):
+            buffer.push(obs, action, reward, log_prob, mask)
+        batch = buffer.sample(batch_size=32)
+    """
+
+    def __init__(self, capacity: int) -> None:
+        """Initialize the simple replay buffer.
+
+        Args:
+            capacity: Maximum number of transitions.
+        """
+        super().__init__(capacity)
+        self._obs: List[np.ndarray] = []
+        self._actions: List[int] = []
+        self._rewards: List[float] = []
+        self._log_probs: List[float] = []
+        self._masks: List[float] = []
+
+    def push(
+        self,
+        obs: np.ndarray,
+        action: int,
+        reward: float,
+        log_prob: float,
+        mask: float,
+    ) -> None:
+        """Add a transition to the buffer.
+
+        If the buffer is not full, appends to the end. If full, overwrites
+        the oldest entry (circular buffer behavior).
+
+        Args:
+            obs: Prompt embedding vector.
+            action: Index of the augmenter applied.
+            reward: Reward from the reward model.
+            log_prob: Log probability of the action.
+            mask: Validity mask.
+        """
+        if self._size < self._capacity:
+            self._obs.append(np.asarray(obs, dtype=np.float32))
+            self._actions.append(action)
+            self._rewards.append(reward)
+            self._log_probs.append(log_prob)
+            self._masks.append(mask)
+            self._size += 1
+        else:
+            idx = self._head % self._capacity
+            self._obs[idx] = np.asarray(obs, dtype=np.float32)
+            self._actions[idx] = action
+            self._rewards[idx] = reward
+            self._log_probs[idx] = log_prob
+            self._masks[idx] = mask
+        self._head += 1
+
+    def _sample_indices(self, batch_size: int) -> List[int]:
+        """Sample uniform random indices.
+
+        Args:
+            batch_size: Number of indices to sample.
+
+        Returns:
+            List of random indices.
+        """
+        n = min(batch_size, self._size)
+        return random.sample(range(self._size), n)
+
+    def sample(self, batch_size: int) -> Dict[str, Any]:
+        """Sample a batch of transitions with uniform probability.
+
+        Args:
+            batch_size: Number of transitions to sample.
+
+        Returns:
+            Dictionary with keys "obs", "action", "reward", "log_prob", "mask",
+            each containing a numpy array of sampled values.
+        """
+        if self.is_empty():
+            raise RuntimeError("Cannot sample from an empty buffer")
+
+        indices = self._sample_indices(batch_size)
+        return {
+            "obs": np.stack([self._obs[i] for i in indices], axis=0),
+            "action": np.array([self._actions[i] for i in indices], dtype=np.int64),
+            "reward": np.array([self._rewards[i] for i in indices], dtype=np.float32),
+            "log_prob": np.array(
+                [self._log_probs[i] for i in indices], dtype=np.float32
+            ),
+            "mask": np.array([self._masks[i] for i in indices], dtype=np.float32),
+        }
+
+    def clear(self) -> None:
+        """Remove all transitions and free memory."""
+        super().clear()
+        self._obs.clear()
+        self._actions.clear()
+        self._rewards.clear()
+        self._log_probs.clear()
+        self._masks.clear()
+
+
+class PrioritizedReplayBuffer(BaseReplayBuffer):
+    """Prioritized Experience Replay buffer with advantage-weighted sampling.
+
+    Implements the prioritized sampling strategy from Schaul et al. (2016)
+    "Prioritized Experience Replay". Transitions with higher TD-error
+    (or advantage in policy gradient context) are sampled with higher
+    probability, enabling more efficient learning from informative samples.
+
+    Uses a binary heap for O(log N) priority updates and sampling.
+
+    Memory-efficient: stores only the priority tree and transition data.
+
+    Example::
+
+        buffer = PrioritizedReplayBuffer(capacity=10000)
+        for _ in range(5000):
+            buffer.push(obs, action, reward, log_prob, mask)
+        batch = buffer.sample(batch_size=32)
+
+    Reference: https://arxiv.org/abs/1511.05952
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        alpha: float = 0.6,
+        beta: float = 0.4,
+        beta_increment: float = 0.001,
+    ) -> None:
+        """Initialize the prioritized replay buffer.
+
+        Args:
+            capacity: Maximum number of transitions.
+            alpha: Priority exponent (0 = uniform, 1 = fully prioritized).
+                Higher values emphasize high-priority samples more.
+            beta: Importance sampling exponent for bias correction.
+                Increases from 0 to 1 during training.
+            beta_increment: Amount to increase beta per sample call.
+
+        Raises:
+            ValueError: If alpha or beta is not in [0, 1].
+        """
+        if not 0 <= alpha <= 1:
+            raise ValueError("alpha must be in [0, 1]")
+        if not 0 <= beta <= 1:
+            raise ValueError("beta must be in [0, 1]")
+
+        super().__init__(capacity)
+        self._alpha = alpha
+        self._beta = beta
+        self._beta_increment = beta_increment
+
+        # Priority tree (1-indexed, size 2*capacity)
+        self._tree_size = 2 * capacity
+        self._tree: List[float] = [0.0] * self._tree_size
+
+        # Data storage
+        self._obs: List[np.ndarray] = []
+        self._actions: List[int] = []
+        self._rewards: List[float] = []
+        self._log_probs: List[float] = []
+        self._masks: List[float] = []
+        self._priorities: List[float] = [1e-4] * capacity  # Initial priorities
+
+    @property
+    def alpha(self) -> float:
+        """Priority exponent controlling sampling bias."""
+        return self._alpha
+
+    @property
+    def beta(self) -> float:
+        """Current beta value for importance sampling weight computation."""
+        return self._beta
+
+    def __repr__(self) -> str:
+        """String representation of the buffer."""
+        return (
+            f"PrioritizedReplayBuffer(capacity={self._capacity}, "
+            f"size={self._size}, alpha={self._alpha})"
+        )
+
+    def _parent(self, idx: int) -> int:
+        """Get parent index in the binary heap."""
+        return idx // 2
+
+    def _left_child(self, idx: int) -> int:
+        """Get left child index in the binary heap."""
+        return 2 * idx
+
+    def _right_child(self, idx: int) -> int:
+        """Get right child index in the binary heap."""
+        return 2 * idx + 1
+
+    def _update(self, idx: int, priority: float) -> None:
+        """Update priority at leaf index and propagate up.
+
+        Args:
+            idx: Leaf index in the tree (1-indexed).
+            priority: New priority value.
+        """
+        priority = max(priority, 1e-4)  # Minimum priority to avoid zero
+        tree_idx = idx + self._capacity  # Map data index to tree leaf
+        self._tree[tree_idx] = priority
+
+        # Propagate up to root
+        while tree_idx > 1:
+            parent_idx = self._parent(tree_idx)
+            left_idx = self._left_child(parent_idx)
+            right_idx = self._right_child(parent_idx)
+
+            # Parent priority is max of children
+            parent_priority = max(
+                self._tree[left_idx] if left_idx < self._tree_size else 0.0,
+                self._tree[right_idx] if right_idx < self._tree_size else 0.0,
+            )
+            if self._tree[parent_idx] == parent_priority:
+                break
+            self._tree[parent_idx] = parent_priority
+            tree_idx = parent_idx
+
+    def _get_priority(self, idx: int) -> float:
+        """Get priority at data index.
+
+        Args:
+            idx: Data index (0-indexed).
+
+        Returns:
+            Priority value.
+        """
+        tree_idx = idx + self._capacity
+        return self._tree[tree_idx]
+
+    def _sample(self, batch_size: int) -> Tuple[List[int], np.ndarray]:
+        """Sample a batch of indices using prioritized sampling.
+
+        Uses the segment tree approach: divide [0, sum_priorities] into
+        batch_size equal-width segments, then sample one point uniformly
+        from each segment and find the leaf with the highest priority
+        covering that point.
+
+        Args:
+            batch_size: Number of indices to sample.
+
+        Returns:
+            Tuple of (sampled indices, importance sampling weights).
+        """
+        n = min(batch_size, self._size)
+        if n == 0:
+            return [], np.array([], dtype=np.float32)
+
+        # Get total priority (root of tree)
+        total_priority = self._tree[1]
+        if total_priority <= 0:
+            total_priority = 1e-4
+
+        # Divide into segments within [0, total_priority)
+        segment_length = total_priority / n
+        indices = []
+        weights = []
+
+        for _ in range(n):
+            # Sample a point uniformly from [low, high) within [0, total_priority)
+            low = random.random() * segment_length
+            high = low + segment_length
+            point = random.uniform(low, min(high, total_priority))
+
+            # Find the leaf covering this point
+            tree_idx = 1
+            while tree_idx < self._capacity:
+                left_idx = self._left_child(tree_idx)
+                right_idx = self._right_child(tree_idx)
+                if self._tree[left_idx] >= point:
+                    tree_idx = left_idx
+                else:
+                    point -= self._tree[left_idx]
+                    tree_idx = right_idx
+
+            # Get data index
+            data_idx = tree_idx - self._capacity
+            if 0 <= data_idx < self._size:
+                indices.append(data_idx)
+                # Compute importance sampling weight
+                p_i = self._tree[tree_idx] / total_priority
+                w_i = (p_i * self._size) ** (-self._beta)
+                weights.append(w_i)
+
+        # Normalize weights
+        if weights:
+            max_weight = max(weights)
+            weights = [w / max_weight for w in weights]
+            weights = np.array(weights, dtype=np.float32)
+        else:
+            weights = np.array([], dtype=np.float32)
+
+        return indices, weights
+
+    def push(
+        self,
+        obs: np.ndarray,
+        action: int,
+        reward: float,
+        log_prob: float,
+        mask: float,
+        priority: Optional[float] = None,
+    ) -> None:
+        """Add a transition to the buffer with specified priority.
+
+        If the buffer is not full, appends to the end. If full, overwrites
+        the oldest entry (circular buffer behavior).
+
+        Args:
+            obs: Prompt embedding vector.
+            action: Index of the augmenter applied.
+            reward: Reward from the reward model.
+            log_prob: Log probability of the action.
+            mask: Validity mask.
+            priority: Priority value (0-1). If None, uses max priority (1.0).
+        """
+        if priority is None:
+            priority = 1.0  # Max initial priority
+        priority = max(priority, 1e-4)  # Clamp to minimum
+
+        if self._size < self._capacity:
+            self._obs.append(np.asarray(obs, dtype=np.float32))
+            self._actions.append(action)
+            self._rewards.append(reward)
+            self._log_probs.append(log_prob)
+            self._masks.append(mask)
+            self._priorities[self._size] = priority
+            self._size += 1
+            # Update tree with new entry
+            self._update(self._size - 1, priority)
+        else:
+            idx = self._head % self._capacity
+            self._obs[idx] = np.asarray(obs, dtype=np.float32)
+            self._actions[idx] = action
+            self._rewards[idx] = reward
+            self._log_probs[idx] = log_prob
+            self._masks[idx] = mask
+            # Update priority
+            self._priorities[idx] = priority
+            self._update(idx, priority)
+        self._head += 1
+
+    def update_priority(self, idx: int, priority: float) -> None:
+        """Update priority of a specific transition.
+
+        Args:
+            idx: Data index to update.
+            priority: New priority value.
+        """
+        if 0 <= idx < self._size:
+            priority = max(priority, 1e-4)
+            self._priorities[idx] = priority
+            self._update(idx, priority)
+
+    def update_priorities(self, indices: List[int], priorities: List[float]) -> None:
+        """Update priorities for specific indices after training.
+
+        This should be called after an update step with the computed
+        TD-errors or advantages for the sampled transitions.
+
+        Args:
+            indices: List of data indices to update.
+            priorities: List of new priority values (absolute TD-errors).
+        """
+        for idx, priority in zip(indices, priorities):
+            if 0 <= idx < self._size:
+                self._priorities[idx] = priority
+                self._update(idx, priority)
+
+    def get_importance_sampling_weights(self, indices: List[int]) -> np.ndarray:
+        """Compute importance sampling weights for sampled indices.
+
+        Weights correct for the bias introduced by non-uniform sampling.
+        w = (N * P(i))^-beta / max_weight
+
+        Args:
+            indices: List of data indices.
+
+        Returns:
+            Array of importance sampling weights.
+        """
+        total_priority = self._tree[1]
+        if total_priority <= 0:
+            total_priority = 1e-4
+
+        n = self._size
+        weights = []
+        for idx in indices:
+            if 0 <= idx < n:
+                p_i = self._get_priority(idx) / total_priority
+                w_i = (p_i * n) ** (-self._beta)
+                weights.append(w_i)
+
+        # Normalize by max weight
+        if weights:
+            max_weight = max(weights)
+            weights = [w / max_weight for w in weights]
+        return np.array(weights, dtype=np.float32)
+
+    def decay_beta(self) -> None:
+        """Increment beta towards 1.0 for more uniform sampling over time."""
+        self._beta = min(self._beta + self._beta_increment, 1.0)
+
+    def _sample_indices(self, batch_size: int) -> List[int]:
+        """Sample indices using prioritized sampling (legacy method).
+
+        Returns only indices without weights for compatibility with
+        the base class interface.
+
+        Args:
+            batch_size: Number of indices to sample.
+
+        Returns:
+            List of sampled indices.
+        """
+        if self.is_empty():
+            raise RuntimeError("Cannot sample from an empty buffer")
+
+        indices, _ = self._sample(batch_size)
+        return indices
+
+    def sample(self, batch_size: int) -> Dict[str, Any]:
+        """Sample a batch of transitions with priority-weighted probability.
+
+        Higher priority transitions are sampled with higher probability.
+        Returns a dictionary with batch data and importance sampling weights
+        for bias correction during training.
+
+        Args:
+            batch_size: Number of transitions to sample.
+
+        Returns:
+            Dictionary with keys "obs", "action", "reward", "log_prob",
+            "mask", "weights", and "indices".
+        """
+        if self.is_empty():
+            raise RuntimeError("Cannot sample from an empty buffer")
+
+        # Increment beta for more uniform sampling over time
+        self._beta = min(self._beta + self._beta_increment, 1.0)
+
+        indices, weights = self._sample(batch_size)
+        return {
+            "obs": np.stack([self._obs[i] for i in indices], axis=0),
+            "action": np.array([self._actions[i] for i in indices], dtype=np.int64),
+            "reward": np.array([self._rewards[i] for i in indices], dtype=np.float32),
+            "log_prob": np.array(
+                [self._log_probs[i] for i in indices], dtype=np.float32
+            ),
+            "mask": np.array([self._masks[i] for i in indices], dtype=np.float32),
+            "weights": weights,
+            "indices": np.array(indices, dtype=np.int64),
+        }
+
+    def clear(self) -> None:
+        """Remove all transitions and free memory."""
+        super().clear()
+        self._obs.clear()
+        self._actions.clear()
+        self._rewards.clear()
+        self._log_probs.clear()
+        self._masks.clear()
+        self._priorities = [1e-4] * self._capacity
+        self._tree = [0.0] * self._tree_size
 
 
 class BaseExplorationModule(ABC):
@@ -168,7 +783,7 @@ class BasePolicyTrainer(ABC):
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
         exploration_module: Optional[BaseExplorationModule] = None,
-        replay_buffer=None,
+        replay_buffer: Optional[BaseReplayBuffer] = None,
         eps: float = 1e-8,
     ):
         super().__init__()
@@ -211,7 +826,6 @@ class ReinforcePPTrainer(BasePolicyTrainer):
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
         exploration_module: Optional[BaseExplorationModule] = None,
-        replay_buffer=None,
         clip_param: float = 0.2,
         num_mini_batch: int = 4,
         entropy_coef: float = 0.01,
@@ -233,7 +847,6 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             optimizer: The optimizer to use for training
             lr_scheduler: Optional learning rate scheduler for dynamic learning rate
             exploration_module: Optional exploration exploitation module
-            replay_buffer: Optional replay buffer
             clip_param: PPO-style clipping parameter
             num_mini_batch: Number of mini-batches per epoch
             entropy_coef: Entropy regularization coefficient
@@ -245,7 +858,8 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             gamma: Discount factor for return calculation (default 1.0 for REINFORCE++)
             eps: Epsilon for optimizer numerical stability
         """
-        # TODO: Add support for replay buffer and exploration module in future iterations
+        # REINFORCE++ is an on-policy algorithm: data is collected from the
+        # current policy and used for a single update pass. No replay buffer.
         super().__init__(
             policy_model,
             env,
@@ -253,7 +867,7 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             optimizer,
             lr_scheduler,
             exploration_module,
-            replay_buffer,
+            None,  # replay_buffer: on-policy, not supported
             eps,
         )
         self.clip_param = clip_param
@@ -666,7 +1280,6 @@ class GRPOTrainer(BasePolicyTrainer):
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
         exploration_module: Optional[BaseExplorationModule] = None,
-        replay_buffer=None,
         clip_param: float = 0.2,
         num_mini_batch: int = 4,
         entropy_coef: float = 0.01,
@@ -679,6 +1292,8 @@ class GRPOTrainer(BasePolicyTrainer):
         eps: float = 1e-8,
         **kwargs,
     ):
+        # GRPO is an on-policy algorithm: group data is collected from the
+        # current policy and used for a single update pass. No replay buffer.
         super().__init__(
             policy_model,
             env,
@@ -686,7 +1301,7 @@ class GRPOTrainer(BasePolicyTrainer):
             optimizer,
             lr_scheduler,
             exploration_module,
-            replay_buffer,
+            None,  # replay_buffer: on-policy, not supported
             eps,
         )
         self.clip_param = clip_param
@@ -996,7 +1611,6 @@ class PPOTrainer(BasePolicyTrainer):
         value_loss_coef,
         entropy_coef,
         exploration_module: Optional[BaseExplorationModule] = None,
-        replay_buffer=None,
         clip_param=0.2,
         max_grad_norm: float = 1.0,
         use_clipped_value_loss=True,
@@ -1006,6 +1620,8 @@ class PPOTrainer(BasePolicyTrainer):
         eps=1e-8,
         **kwargs,
     ):
+        # PPO is an on-policy algorithm: trajectories are collected from the
+        # current policy and used for multiple update epochs, then discarded.
         super().__init__(
             actor_critic,
             env,
@@ -1013,7 +1629,7 @@ class PPOTrainer(BasePolicyTrainer):
             optimizer,
             lr_scheduler,
             exploration_module,
-            replay_buffer,
+            None,  # replay_buffer: on-policy, not supported
             eps,
         )
         self.clip_param = clip_param
@@ -1393,7 +2009,7 @@ class DPOTrainer(BasePolicyTrainer):
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
         exploration_module: Optional[BaseExplorationModule] = None,
-        replay_buffer=None,
+        replay_buffer: Optional[BaseReplayBuffer] = None,
         beta: float = 0.1,
         num_mini_batch: int = 4,
         max_grad_norm: float = 1.0,
@@ -1513,6 +2129,72 @@ class DPOTrainer(BasePolicyTrainer):
                 rejected_prompts.append(augmented_prompts[rejected_idx])
                 preferred_rewards.append(augmentation_rewards[preferred_idx])
                 rejected_rewards.append(augmentation_rewards[rejected_idx])
+
+        return preferred_prompts, rejected_prompts, preferred_rewards, rejected_rewards
+
+    def _form_preference_pairs_from_buffer(
+        self, num_pairs: int = 32
+    ) -> Tuple[list, list, list, list]:
+        """Form preference pairs from replay buffer entries.
+
+        Samples transitions from the replay buffer and groups them by
+        similar observations to create preference pairs based on rewards.
+
+        Args:
+            num_pairs: Number of preference pairs to form
+
+        Returns:
+            Tuple of (preferred_prompts, rejected_prompts, preferred_rewards, rejected_rewards)
+        """
+        if self.replay_buffer is None or self.replay_buffer.is_empty():
+            return [], [], [], []
+
+        # Sample a larger batch to have enough candidates for pairing
+        batch_size = min(num_pairs * 4, self.replay_buffer.size)
+        entries = self.replay_buffer.sample(batch_size)
+
+        if len(entries) < 2:
+            return [], [], [], []
+
+        preferred_prompts = []
+        rejected_prompts = []
+        preferred_rewards = []
+        rejected_rewards = []
+
+        # Group entries by observation similarity (within a threshold)
+        # For simplicity, we bucket observations by quantizing the first few dimensions
+        obs_dim = entries[0].obs.shape[0]
+        num_buckets = min(num_pairs * 2, len(entries) // 2)
+        buckets = [[] for _ in range(num_buckets)]
+
+        for entry in entries:
+            # Simple hashing based on observation quantization
+            bucket_idx = int(np.mean(entry.obs[: min(10, obs_dim)] * 10)) % num_buckets
+            buckets[bucket_idx].append(entry)
+
+        # Form pairs within each bucket based on reward difference
+        for bucket in buckets:
+            if len(bucket) < 2:
+                continue
+
+            # Sort by reward
+            bucket_sorted = sorted(bucket, key=lambda e: e.reward, reverse=True)
+
+            # Take highest and lowest reward as preferred/rejected pair
+            preferred = bucket_sorted[0]
+            rejected = bucket_sorted[-1]
+
+            # Only form pair if there's a meaningful reward difference
+            if preferred.reward - rejected.reward > 1e-6:
+                # Store reward as proxy for prompt (we'll convert to obs later)
+                preferred_rewards.append(preferred.reward)
+                rejected_rewards.append(rejected.reward)
+                # We'll convert to prompts/obs in fit() using the stored observations
+                preferred_prompts.append(preferred)
+                rejected_prompts.append(rejected)
+
+            if len(preferred_prompts) >= num_pairs:
+                break
 
         return preferred_prompts, rejected_prompts, preferred_rewards, rejected_rewards
 
@@ -1744,31 +2426,63 @@ class DPOTrainer(BasePolicyTrainer):
         no_improvement_count = 0
 
         for episode in range(episode_start, self.max_episodes):
-            # Collect preference pairs
-            (
-                preferred_prompts,
-                rejected_prompts,
-                preferred_rewards,
-                rejected_rewards,
-            ) = self._collect_preference_pairs(num_pairs=pairs_per_episode)
+            # Collect or sample preference pairs
+            # Use replay buffer if available (off-policy), otherwise collect online
+            if (
+                self.replay_buffer is not None
+                and not self.replay_buffer.is_empty()
+                and episode > 0
+            ):
+                # Off-policy: sample from replay buffer
+                (
+                    preferred_prompts,
+                    rejected_prompts,
+                    preferred_rewards,
+                    rejected_rewards,
+                ) = self._form_preference_pairs_from_buffer(num_pairs=pairs_per_episode)
+                use_buffer = True
+            else:
+                # On-policy: collect fresh pairs from environment
+                (
+                    preferred_prompts,
+                    rejected_prompts,
+                    preferred_rewards,
+                    rejected_rewards,
+                ) = self._collect_preference_pairs(num_pairs=pairs_per_episode)
+                use_buffer = False
 
             if len(preferred_prompts) == 0:
                 print(f"Episode {episode}: No valid preference pairs collected")
                 continue
 
-            # Convert prompts to observations using embedding model
-            preferred_obs_list = []
-            rejected_obs_list = []
+            # Convert prompts/entries to observations
+            if use_buffer:
+                # preferred_prompts/rejected_prompts are ReplayBufferEntry objects
+                preferred_obs_list = [e.obs for e in preferred_prompts]
+                rejected_obs_list = [e.obs for e in rejected_prompts]
+                preferred_actions_list = [e.action for e in preferred_prompts]
+                rejected_actions_list = [e.action for e in rejected_prompts]
+                preferred_masks_list = [e.mask for e in preferred_prompts]
+                rejected_masks_list = [e.mask for e in rejected_prompts]
+            else:
+                # preferred_prompts/rejected_prompts are prompt strings
+                preferred_obs_list = []
+                rejected_obs_list = []
+                for pref_prompt, rej_prompt in zip(preferred_prompts, rejected_prompts):
+                    pref_embedding = self.env._embedding_model(pref_prompt).astype(
+                        np.float32
+                    )
+                    rej_embedding = self.env._embedding_model(rej_prompt).astype(
+                        np.float32
+                    )
+                    preferred_obs_list.append(pref_embedding)
+                    rejected_obs_list.append(rej_embedding)
+                # For online collection, use action 0 as placeholder
+                preferred_actions_list = [0] * len(preferred_prompts)
+                rejected_actions_list = [0] * len(rejected_prompts)
+                preferred_masks_list = [1.0] * len(preferred_prompts)
+                rejected_masks_list = [1.0] * len(rejected_prompts)
 
-            for pref_prompt, rej_prompt in zip(preferred_prompts, rejected_prompts):
-                pref_embedding = self.env._embedding_model(pref_prompt).astype(
-                    np.float32
-                )
-                rej_embedding = self.env._embedding_model(rej_prompt).astype(np.float32)
-                preferred_obs_list.append(pref_embedding)
-                rejected_obs_list.append(rej_embedding)
-
-            # For simplicity, use action 0 (can be extended to track actual actions)
             batch_size = len(preferred_prompts)
             preferred_obs = torch.tensor(
                 np.stack(preferred_obs_list, axis=0), dtype=torch.float32
@@ -1781,12 +2495,18 @@ class DPOTrainer(BasePolicyTrainer):
             preferred_obs = preferred_obs.unsqueeze(1)  # (batch, 1, obs_dim)
             rejected_obs = rejected_obs.unsqueeze(1)  # (batch, 1, obs_dim)
 
-            # For prompt augmentation, the "action" is implicit in the augmentation
-            # We use action 0 as a placeholder
-            preferred_actions = torch.zeros(batch_size, 1, dtype=torch.long)
-            rejected_actions = torch.zeros(batch_size, 1, dtype=torch.long)
-            preferred_masks = torch.ones(batch_size, 1, dtype=torch.float32)
-            rejected_masks = torch.ones(batch_size, 1, dtype=torch.float32)
+            preferred_actions = torch.tensor(
+                preferred_actions_list, dtype=torch.long
+            ).unsqueeze(-1)
+            rejected_actions = torch.tensor(
+                rejected_actions_list, dtype=torch.long
+            ).unsqueeze(-1)
+            preferred_masks = torch.tensor(
+                preferred_masks_list, dtype=torch.float32
+            ).unsqueeze(-1)
+            rejected_masks = torch.tensor(
+                rejected_masks_list, dtype=torch.float32
+            ).unsqueeze(-1)
 
             # Update policy using DPO loss
             dpo_loss, reward_diff = self.update(

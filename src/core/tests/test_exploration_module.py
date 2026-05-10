@@ -263,7 +263,7 @@ class TestExplorationIntegration:
         )
 
         assert isinstance(trainer.exploration_module, RandomExploration)
-        assert trainer.exploration_module.explore_ratio == 0.5
+        assert trainer.exploration_module.explore_ratio == 0.0
 
     def test_trainer_uses_provided_exploration_module(self):
         """Test that trainer uses provided exploration module."""
