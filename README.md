@@ -46,12 +46,12 @@ Project is in initial development phase. All components are subject to change si
 ## Plan:
 - v0.1: restructure project for generalization, modularization and integrate with LLM packages in the market
 - v.0.1.2: start adding dspy to the support list
-- v0.2 (ongoing): putting RAG and prompt optimization techniques to PromptAugmenter class series in integration packages
-- v0.2.1: Turn on support for [toon format](https://github.com/toon-format/toon-python) of the prompt enhancers when the library version bump to v1.0.0
+- v0.2: putting RAG and prompt optimization techniques to PromptAugmenter class series in integration packages
+- Unified token usage data in the output (done)
+- v0.2.1 (ongoing): focus on RL-based prompt augmeter
+- Turn on support for [toon format](https://github.com/toon-format/toon-python) of the prompt enhancers when the library version bump to v1.0.0 (feature is ready but commented out)
 - v0.3: guardrails classes: PII, toxic, harmful, ...
 - v0.4: apply HITL system wide. This approach requires interrupt mechanism and extensive support for comfirmation and intermidiate step and guidance from human, which will significantly change the component struture. Thus, this potentially requires a major restructure of the codebase again.
-
-- Unified token usage data in the output
 
 - The inference for the diffusion models (i.e. dLLM) will also be planned in the v0.x alongside with current auto-regressive models.
 
