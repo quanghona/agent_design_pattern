@@ -10,8 +10,8 @@ from sacrebleu import sentence_bleu
 
 from aap_core.types import AgentResponse
 
-from .agent import AgentMessage, BaseAgent
-from .chain import BaseLLMChain
+from .types import AgentMessage, BaseLLMChain
+from .agent import BaseAgent
 
 
 class ReflectionAgent(BaseAgent):
@@ -245,7 +245,7 @@ class ParallelAgent(BaseAgent):
             origin=self.card.name,
             responses=[message.responses[-1] for message in responses],
             execution_result="success",
-        )  # type: ignore
+        )
         self.state = "idle"
         return result_message
 
@@ -346,7 +346,7 @@ class CoordinatorAgent(BaseAgent):
                     query=self.summary_prompt,
                     context={summary_steps_key: sub_task_result},
                     responses=[],
-                )  # type: ignore
+                )
                 summary_message = self.planner_agent.execute(summary_message, **kwargs)
             else:
                 return message
@@ -357,7 +357,7 @@ class CoordinatorAgent(BaseAgent):
                 query=message.query,
                 context={summary_steps_key: sub_task_result},
                 responses=[],
-            )  # type: ignore
+            )
             summary_message = self.summary_chain.invoke(summary_message, **kwargs)
 
         self.state = "idle"
@@ -559,7 +559,7 @@ class VotingAgent(BaseAgent):
                     try:
                         voting_message = AgentMessage(
                             query=self.voting_prompt, responses=[]
-                        )  # type: ignore
+                        )
                         voting_message = agent.execute(voting_message, **kwargs)
                         total_score += self.scorer(voting_message.responses[-1][1])
                     except Exception:

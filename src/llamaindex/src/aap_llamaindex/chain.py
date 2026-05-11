@@ -2,14 +2,16 @@ from collections.abc import Callable, Sequence
 from typing import Dict, List, Tuple
 
 from aap_core import utils
-from aap_core.agent import AgentMessage
 from aap_core.chain import BaseCausalMultiTurnsChain
+from aap_core.types import AgentMessage, TokenUsage
 from llama_index.core.base.llms.types import MessageRole, TextBlock
 from llama_index.core.llms import ChatMessage, ChatResponse
 from llama_index.core.llms.function_calling import FunctionCallingLLM
 from llama_index.core.tools import FunctionTool
 from llama_index.core.tools.types import BaseTool
 from pydantic import Field, PrivateAttr
+
+from aap_llamaindex.utils import token_from_response
 
 
 class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatResponse]):
@@ -60,7 +62,7 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
 
     def _generate_response(
         self, conversation: List[ChatMessage], **kwargs
-    ) -> Tuple[List[ChatMessage], ChatResponse, bool]:
+    ) -> Tuple[List[ChatMessage], ChatResponse, bool, TokenUsage]:
         response = self.model.chat_with_tools(
             user_msg=conversation[-1],
             chat_history=conversation[:-1],
@@ -74,7 +76,8 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
             elif block.block_type == "tool_call":
                 has_tool = True
         conversation.append(response.message)
-        return conversation, response, has_tool
+        usage = token_from_response(response)
+        return conversation, response, has_tool, usage
 
     def _process_tools(
         self, conversation: List[ChatMessage], response: ChatResponse

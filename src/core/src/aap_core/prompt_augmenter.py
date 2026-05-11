@@ -1,16 +1,18 @@
 import abc
-from collections.abc import Callable, Sequence
-from typing import Concatenate, Dict, List, Literal, Tuple
 import warnings
+from collections.abc import Callable, Sequence
+from typing import Dict, List, Literal, Tuple
 
-from aap_core.chain import BaseLLMChain
+import gymnasium as gym
+import numpy as np
+import torch
+from gymnasium import spaces
 from pydantic import Field, PrivateAttr, field_validator
 
-from aap_core.retriever import BaseRetriever
+from .policy import BasePolicy
 
 # import toon_format
-from .types import AgentMessage, BaseChain
-import numpy as np
+from .types import AgentMessage, BaseChain, BaseLLMChain
 
 
 class BasePromptAugmenter(BaseChain):
@@ -21,12 +23,10 @@ class BasePromptAugmenter(BaseChain):
     - Structure augmenter: Rewrite / refine the prompt partially or entirely.
     """
 
-    # TODO: handle case where single augmenter contains multiple retrievers
     loop: int | Callable[[AgentMessage], bool] | None = Field(
         default=None,
         description="The loop, either by number of times or by stop condition",
     )
-    retriever: BaseRetriever | None = Field(default=None, description="The retriever")
 
     async def acall(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return self(message, **kwargs)
@@ -36,8 +36,6 @@ class BasePromptAugmenter(BaseChain):
         return self(message, **kwargs)
 
     def call(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        if self.retriever:
-            message = self.retriever(message, **kwargs)
         return self.augment(message, **kwargs)
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -59,8 +57,6 @@ class IdentityPromptAugmenter(BasePromptAugmenter):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.loop = None
-        self.retriever = None
 
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return message
@@ -112,9 +108,18 @@ class SimplePromptAugmenter(BasePromptAugmenter):
         return message
 
 
-class GEPAPromptAugmenter(BasePromptAugmenter):
+class MetaPromptAugmenter(BasePromptAugmenter):
+    """A simple prompt augmenter that use an LLM chain to rewrite the prompt."""
+
+    chain: BaseLLMChain = Field(..., description="LLM chain that rewrite the prompt")
+
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        raise NotImplementedError
+        message = self.chain.invoke(message, **kwargs)
+        return message
+
+
+DataSet = Sequence[Tuple[str, str]]
+PerformanceTuple = Tuple[Sequence[float], float]
 
 
 class SEEPromptAugmenter(BasePromptAugmenter):
@@ -154,17 +159,11 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     Following our framework, in the prompt template, the keyword need to be prefix with 'context.' and the additional
     data need to store in 'context' field of the AgentMessage object
+
+    The custom scorer signature when initalization is Callable[[BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...], PerformanceTuple | None]
     """
 
-    DataSet = Sequence[Tuple[str, str]]
-    PerformanceTuple = Tuple[Sequence[float], float]
-
-    _scorer: Callable[
-        Concatenate[
-            BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...
-        ],
-        PerformanceTuple | None,
-    ] = PrivateAttr()
+    _scorer: Callable[..., PerformanceTuple | None] = PrivateAttr()
     _dist_func: Callable[[Sequence[float], Sequence[float]], float] = PrivateAttr()
     _scorer_args: Dict = PrivateAttr()
     _eval_method: Callable[[str, str], bool] = PrivateAttr()
@@ -198,9 +197,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     )
     init_data: DataSet | str = Field(
         ...,
-        description="""The intial data for phase 0. There are two types of initialzation:
+        description="""The initial data for phase 0. There are two types of initialzation:
         - See-io-pair: provide a set of input-output pairs. SEE apply Lamarckian to generate prompts
-        - SEE-example: SEE take a intial prompt and use Semantic to generate new prompts
+        - SEE-example: SEE take a initial prompt and use Semantic to generate new prompts
         """,
     )
 
@@ -321,18 +320,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     def __init__(
         self,
-        scorer: Literal["hamming"]
-        | Callable[
-            Concatenate[
-                BaseLLMChain,
-                str,
-                Sequence[str],
-                Sequence[PerformanceTuple],
-                DataSet,
-                ...,
-            ],
-            PerformanceTuple | None,
-        ] = "hamming",
+        scorer: Literal["hamming"] | Callable[..., PerformanceTuple | None] = "hamming",
         dist_func: Callable[[Sequence[float], Sequence[float]], float] | None = None,
         scorer_args: Dict = {},
         eval_method: Literal["exact", "include"] | Callable[[str, str], bool] = "exact",
@@ -385,8 +373,8 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return performance_vector, sum(performance_vector) / len(performance_vector)
 
     @classmethod
-    def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> float:
-        return np.count_nonzero(np.array(v1) != np.array(v2))
+    def _hamming_distance(cls, v1: Sequence[float], v2: Sequence[float]) -> int:
+        return int(np.count_nonzero(np.array(v1) != np.array(v2)))
 
     def _hamming_scorer(
         self,
@@ -607,10 +595,10 @@ The newly mutated prompt is:""",
         Find a subset of k parents that maximize the total pairwise distance between performance vector of selected parents.
 
         Hence, the definition 4 (Crossover Operator - CR) in the paper is generalized:
-        Crossover generates a new candidate based on k parents. It is a function
-        operator O_C that perform O_C(P_k, L) = p' where P_k is a subset of P,
-        p' is the generated prompt that hopefully hold features from prompts in P_k.
-        If P_k is chosen from P so that it maximizes \sum_{i < j}^{P_k}d(p_i, p_j), we call it Crossover + Distinct (CR+D)
+        > Crossover generates a new candidate based on k parents. It is a function
+        > operator O_C that perform O_C(P_k, L) = p' where P_k is a subset of P,
+        > p' is the generated prompt that hopefully hold features from prompts in P_k.
+        > If P_k is chosen from P so that it maximizes \\sum_{i < j}^{P_k}d(p_i, p_j), we call it Crossover + Distinct (CR+D)
 
         If k = 2, it fallbacks to the original work
         We gather P_k by greedily adding points until we reach size k. First we
@@ -877,3 +865,351 @@ mutated prompt:
 
         message.query = P[np.argmax([s[1] for s in S])]
         return message
+
+
+class PromptOptimizationEnv(gym.Env):
+    """A Gymnasium environment for prompt optimization.
+
+    This environment allows an agent to select prompt modification actions
+    and receive rewards based on the quality of the resulting prompts.
+
+    The environment maintains a current prompt and allows the agent to apply
+    prompt augmenters (actions) to modify it. The observation is the embedding
+    of the current prompt, and the reward is computed by the reward model.
+    The current state is printed to the command line after each step.
+
+    Attributes:
+        action_space: Discrete space where each value maps to a prompt augmenter
+        observation_space: Box space representing prompt embeddings
+        reward_model: Callable that takes a prompt and returns a quality score
+
+    Example:
+        ```python
+        from aap_core.prompt_augmenter import PromptOptimizationEnv
+        import numpy as np
+
+        # Define your augmenters
+        augmenters = [
+            SimplePromptAugmenter(format="{query} {data}", data_key="context.data"),
+            MetaPromptAugmenter(chain=llm_chain)
+        ]
+
+        # Define embedding model (e.g., using sentence-transformers)
+        def embedding_model(prompt: str) -> np.ndarray:
+            # Return embedding vector
+            # Example: return embedding_model.encode(prompt)
+            return np.random.randn(768).astype(np.float32)
+
+        # Define reward model
+        def reward_model(prompt: str) -> float:
+            # Return quality score based on prompt
+            return 0.0
+
+        # Create environment
+        env = PromptOptimizationEnv(
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            initial_prompt="Your initial prompt here",
+            max_steps=10
+        )
+
+        # Use with Gymnasium API
+        obs, info = env.reset()
+        action = env.action_space.sample()  # Or use RL agent
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        # Or use with RL libraries like Stable-Baselines3
+        # from stable_baselines3 import PPO
+        # model = PPO("MlpPolicy", env, verbose=1)
+        # model.learn(total_timesteps=10000)
+        # obs, info = env.reset()
+        # for _ in range(100):
+        #     action, _ = model.predict(obs)
+        #     obs, reward, terminated, truncated, info = env.step(action)
+
+        # Or use with TorchRL (https://docs.pytorch.org/rl/stable/index.html) for DQN training
+        # from torchrl.envs import GymEnv, TransformedEnv, StepCounter
+        # from torchrl.collectors import SyncDataCollector
+        # from torchrl.data import LazyTensorStorage, ReplayBuffer
+        # from torchrl.modules import MLP, QValueModule, EGreedyModule
+        # from torchrl.objectives import DQNLoss
+        # import torch
+        #
+        # # Wrap the Gymnasium environment for TorchRL
+        # env = TransformedEnv(GymEnv(env), StepCounter())
+        #
+        # # Build Q-value network
+        # value_net = MLP(out_features=env.action_spec.shape[-1], num_cells=[64, 64])
+        # q_value_module = QValueModule(
+        #     value_net, in_keys=["observation"], out_keys=["action_value"], spec=env.action_spec
+        # )
+        #
+        # # Add exploration with epsilon-greedy
+        # policy = q_value_module
+        # exploration_module = EGreedyModule(
+        #     eps_init=0.5, eps_final=0.05, annealing_num_steps=10000
+        # )
+        # policy_explore = torch.nn.Sequential(policy, exploration_module)
+        #
+        # # Data collector and replay buffer
+        # collector = SyncDataCollector(
+        #     env,
+        #     policy_explore,
+        #     frames_per_batch=100,
+        #     total_frames=10000,
+        #     init_random_frames=500,
+        # )
+        # replay_buffer = ReplayBuffer(storage=LazyTensorStorage(10000))
+        #
+        # # Loss and optimizer
+        # loss_module = DQNLoss(value_network=q_value_module, action_space=env.action_spec, delay_value=True)
+        # optimizer = torch.optim.Adam(loss_module.parameters(), lr=1e-3)
+        #
+        # # Training loop
+        # for data in collector:
+        #     replay_buffer.extend(data)
+        #     if len(replay_buffer) > 500:
+        #         for _ in range(10):
+        #             sample = replay_buffer.sample(32)
+        #             loss_vals = loss_module(sample.to("cpu"))
+        #             loss_vals["loss"].backward()
+        #             optimizer.step()
+        #             optimizer.zero_grad()
+        #         exploration_module.step(data.numel())
+        ```
+    """
+
+    def __init__(
+        self,
+        initial_prompt: str,
+        augmenters: Sequence[BasePromptAugmenter],
+        embedding_model: Callable[[str], np.ndarray],
+        reward_model: Callable[[str], float],
+        max_steps: int = 10,
+        min_embedding_threshold: float = 0.8,
+        reward_threshold: float = float("inf"),
+        eps: float = 1e-8,
+    ):
+        """Initialize the prompt optimization environment.
+
+        Args:
+            initial_prompt: The starting prompt for the episode.
+            augmenters: List of BasePromptAugmenter objects representing actions.
+                       Each augmenter can modify the prompt in different ways.
+            embedding_model: Callable that takes a prompt string and returns
+                           its embedding as a numpy array.
+            reward_model: Callable that takes a prompt string and returns
+                        a float indicating prompt quality.
+            max_steps: Maximum number of steps per episode.
+            min_embedding_threshold: episode terminated if the distance between 2
+                consecutive prompt embeddings falls below this threshold.
+            reward_threshold: episode terminated if the reward exceeds this threshold.
+                Defaults to infinity (no reward-based termination).
+        """
+        super().__init__()
+
+        # Validate that at least one augmenter is provided
+        assert len(augmenters) > 0, (
+            "At least one augmenter must be provided. "
+            "An empty list of augmenters results in an empty action space."
+        )
+
+        self._initial_prompt = initial_prompt
+        self._augmenters = augmenters
+        self._embedding_model = embedding_model
+        self._reward_model = reward_model
+        self.max_steps = max_steps
+        self._min_embedding_threshold = min_embedding_threshold
+        self._reward_threshold = reward_threshold
+        self.eps = eps
+
+        # Determine embedding dimension by testing with initial prompt
+        self._embedding_dim = len(self._embedding_model(initial_prompt))
+        self._prev_embedding = None
+
+        # Action space: discrete space where each value represents an augmenter
+        # Actions are in range [0, num_augmenters)
+        self.action_space = spaces.Discrete(len(self._augmenters))
+
+        # Observation space: Box space for embedding vectors
+        # Using unbounded box since embeddings can have any float values
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self._embedding_dim,),
+            dtype=np.float32,
+        )
+
+    def _get_observation(self) -> np.ndarray:
+        """Get the current observation (prompt embedding).
+
+        Returns:
+            The embedding of the current prompt as a numpy array.
+        """
+        return self._current_embedding.copy()
+
+    def _get_info(self) -> Dict:
+        """Get auxiliary information about the current state.
+
+        Returns:
+            Dictionary containing current prompt and step count.
+        """
+        return {
+            "current_prompt": self._current_prompt,
+            "step_count": self._step_count,
+            "max_steps": self.max_steps,
+            "num_augmenters": len(self._augmenters),
+        }
+
+    def reset(
+        self, *, seed: int | None = None, options: Dict | None = None
+    ) -> Tuple[np.ndarray, Dict]:
+        """Reset the environment to start a new episode.
+
+        Args:
+            seed: Random seed for reproducibility.
+            options: Additional reset options (not used currently).
+
+        Returns:
+            Tuple of (observation, info) for the initial state.
+        """
+        super().reset(seed=seed)
+
+        self._current_prompt = self._initial_prompt
+        self._current_embedding = self._embedding_model(self._current_prompt).astype(
+            np.float32
+        )
+        self._prev_embedding = self._current_embedding.copy()
+        self._step_count = 0
+        observation = self._get_observation()
+        info = self._get_info()
+
+        return observation, info
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """Execute one step in the environment.
+
+        Args:
+            action: The action index (0 to num_augmenters-1) selecting which
+                   augmenter to apply to the current prompt.
+
+        Returns:
+            Tuple of (observation, reward, terminated, truncated, info).
+        """
+        # Validate action
+        if not self.action_space.contains(action):
+            raise ValueError(f"Invalid action: {action}")
+        elif isinstance(self._augmenters[action], IdentityPromptAugmenter):
+            return self._current_embedding.copy(), 0, True, False, self._get_info()
+
+        try:
+            augmenter = self._augmenters[action]
+            message = AgentMessage(query=self._current_prompt)
+            result_message = augmenter(message)
+            self._current_prompt = result_message.query
+        except Exception as e:
+            # If augmentation fails, keep the current prompt
+            warnings.warn(f"Augmenter {action} failed: {e}")
+
+        reward = self._reward_model(self._current_prompt)
+        self._current_embedding = self._embedding_model(self._current_prompt).astype(
+            np.float32
+        )
+        self._step_count += 1
+        truncated = self._step_count >= self.max_steps
+        terminated = False
+        terminated_reason = None
+
+        # Check embedding distance between consecutive prompts
+        if self._prev_embedding is not None:
+            cosine_sim = np.dot(self._current_embedding, self._prev_embedding) / (
+                np.linalg.norm(self._current_embedding)
+                * np.linalg.norm(self._prev_embedding)
+                + self.eps
+            )
+            if cosine_sim < self._min_embedding_threshold:
+                terminated = True
+                terminated_reason = f"Cosine similarity {cosine_sim:.6f} < threshold {self._min_embedding_threshold}"
+
+        # Check if reward exceeds threshold
+        if not terminated and self._reward_threshold < float("inf"):
+            if reward > self._reward_threshold:
+                terminated = True
+                terminated_reason = (
+                    f"Reward {reward:.4f} > threshold {self._reward_threshold}"
+                )
+
+        # Update previous embedding for next step
+        self._prev_embedding = self._current_embedding.copy()
+        observation = self._get_observation()
+        info = self._get_info()
+        info["terminated_reason"] = terminated_reason
+        # self._print_state()
+
+        return observation, reward, terminated, truncated, info
+
+    def _print_state(self) -> None:
+        """Print the current environment state to the command line."""
+        print("=" * 60)
+        print(f"Step: {self._step_count} / {self.max_steps}")
+        print(f"Current Prompt: {self._current_prompt}")
+        print(f"Quality: {self._reward_model(self._current_prompt):.4f}")
+        print("=" * 60)
+
+
+class RLPromptAugmenter(BasePromptAugmenter):
+    """RL-based prompt augmenter using policy gradient methods."""
+
+    model_config = {"arbitrary_types_allowed": True}
+    env: PromptOptimizationEnv = Field(
+        ..., description="The prompt optimization environment"
+    )
+    policy_model: BasePolicy = Field(..., description="The trained policy model")
+
+    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        """Use the trained policy to iteratively apply augmenters and update the prompt.
+
+        The policy model takes the current prompt embedding as input and outputs
+        action logits. We sample actions from the policy and apply the corresponding
+        augmenters until max_steps is reached.
+
+        The initial prompt is taken from the 'message' object's query field.
+
+        Args:
+            message: The input AgentMessage containing the initial prompt.
+            **kwargs: Additional arguments passed to the environment step.
+
+        Returns:
+            The updated AgentMessage with the optimized prompt.
+        """
+        # Set the initial prompt from the message object
+        self.env._initial_prompt = message.query
+        self.env._current_prompt = message.query
+
+        # Reset environment with the current prompt
+        obs, info = self.env.reset()
+        step_count = 0
+
+        while step_count < self.env.max_steps:
+            # Convert observation to tensor with proper shape for policy model
+            # obs shape: (embedding_dim,) -> (1, embedding_dim) for batch=1
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+
+            # Get action from policy (no gradient needed for inference)
+            with torch.no_grad():
+                logits = self.policy_model(obs_tensor)
+                # Extract action from policy output using helper method
+                action, action_log_prob = self.policy_model.get_action(logits)
+
+            # Take step in environment
+            obs, reward, terminated, truncated, info = self.env.step(int(action.item()))
+            step_count += 1
+
+            # Stop if episode terminated early
+            if terminated or truncated:
+                break
+
+        message.query = info["current_prompt"]
+        return message
+
