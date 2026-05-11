@@ -16,7 +16,7 @@ Classes:
 
 import math
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -50,7 +50,7 @@ class BasePolicy(nn.Module, ABC):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
-        weight: str | None = None,
+        weight: Optional[str] = None,
         **kargs,
     ):
         super().__init__()
@@ -176,7 +176,7 @@ class GPT2Policy(BasePolicy):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
-        weight: str | None = None,
+        weight: Optional[str] = None,
         n_layer: int = 4,
         n_head: int = 4,
         n_embd: int = 128,
@@ -739,7 +739,6 @@ class GQABlock(nn.Module):
         n_embd: int,
         n_head: int,
         n_kv_groups: int,
-        embd_pdrop: float,
         resid_pdrop: float,
         attn_pdrop: float,
         use_rope: bool = True,
@@ -847,7 +846,7 @@ class GPT2RoPEGQAPolicy(BasePolicy):
         self,
         action_space: spaces.Discrete,
         observation_space: spaces.Box,
-        weight: str | None = None,
+        weight: Optional[str] = None,
         n_layer: int = 4,
         n_head: int = 4,
         n_kv_groups: int = 4,
