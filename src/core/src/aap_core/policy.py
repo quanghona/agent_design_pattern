@@ -725,7 +725,6 @@ class GQABlock(nn.Module):
         n_embd: Embedding dimension
         n_head: Number of query attention heads
         n_kv_groups: Number of key-value groups for GQA
-        embd_pdrop: Dropout for embedding
         resid_pdrop: Dropout for residual connections
         attn_pdrop: Dropout for attention weights
         use_rope: Whether to apply RoPE (default: True)
@@ -883,7 +882,6 @@ class GPT2RoPEGQAPolicy(BasePolicy):
                     n_embd=n_embd,
                     n_head=n_head,
                     n_kv_groups=n_kv_groups,
-                    embd_pdrop=embd_pdrop,
                     resid_pdrop=resid_pdrop,
                     attn_pdrop=attn_pdrop,
                     use_rope=True,

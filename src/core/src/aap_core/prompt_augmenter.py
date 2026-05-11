@@ -1101,6 +1101,7 @@ class PromptOptimizationEnv(gym.Env):
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
         elif isinstance(self._augmenters[action], IdentityPromptAugmenter):
+            self._step_count += 1
             return self._current_embedding.copy(), 0, True, False, self._get_info()
 
         try:

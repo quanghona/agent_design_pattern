@@ -245,7 +245,6 @@ class TestGQABlock:
             n_embd=64,
             n_head=4,
             n_kv_groups=2,
-            embd_pdrop=0.0,
             resid_pdrop=0.0,
             attn_pdrop=0.0,
         )
@@ -259,7 +258,6 @@ class TestGQABlock:
             n_embd=64,
             n_head=4,
             n_kv_groups=2,
-            embd_pdrop=0.0,
             resid_pdrop=0.0,
             attn_pdrop=0.0,
             use_rope=True,
@@ -274,7 +272,6 @@ class TestGQABlock:
             n_embd=64,
             n_head=4,
             n_kv_groups=2,
-            embd_pdrop=0.0,
             resid_pdrop=0.0,
             attn_pdrop=0.0,
         )
@@ -287,7 +284,6 @@ class TestGQABlock:
             n_embd=64,
             n_head=4,
             n_kv_groups=2,
-            embd_pdrop=0.0,
             resid_pdrop=0.0,
             attn_pdrop=0.0,
         )
@@ -302,7 +298,6 @@ class TestGQABlock:
             n_embd=64,
             n_head=4,
             n_kv_groups=2,
-            embd_pdrop=0.0,
             resid_pdrop=0.5,
             attn_pdrop=0.5,
         )
@@ -323,7 +318,6 @@ class TestGQABlock:
                 n_embd=64,
                 n_head=5,  # 64 % 5 != 0
                 n_kv_groups=2,
-                embd_pdrop=0.0,
                 resid_pdrop=0.0,
                 attn_pdrop=0.0,
             )

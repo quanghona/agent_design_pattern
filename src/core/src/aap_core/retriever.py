@@ -23,11 +23,18 @@ class BaseRetriever(BaseChain):
         message = self.retrieve(message, **kwargs)
         if self.post_process:
             # reranker, summarizer, etc
+            # The implementation is stay entirely in the post_process object
             message = self.post_process(message)
         return message
 
 
 class DataFrameRetriever(BaseRetriever):
+    """
+    A class that retrieves data from a pandas DataFrame.
+
+    This class is used to retrieve data from a pandas DataFrame. It takes in a pandas DataFrame as input and returns the data as a string.
+    """
+
     _data: str | None = PrivateAttr(None)
     data_key: str = Field(
         default="context.data", description="The key to the data in the message"

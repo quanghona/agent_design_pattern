@@ -124,7 +124,7 @@ class TestPromptOptimizationEnv:
 
     def test_reset_resets_state(self):
         """Test that reset properly resets the environment state."""
-        augmenters = [IdentityPromptAugmenter()]
+        augmenters = [DummyAugmenter(suffix=" test")]
         embedding_model = lambda x: np.zeros(10, dtype=np.float32)
         reward_model = lambda x: 0.0
 
@@ -230,8 +230,9 @@ class TestPromptOptimizationEnv:
     def test_step_with_augmenter_failure(self):
         """Test step when augmenter fails."""
 
-        # Create a simple augmenter that fails
-        class FailingAugmenter(IdentityPromptAugmenter):
+        # Create a simple augmenter that fails (must NOT inherit from IdentityPromptAugmenter
+        # because step() terminates immediately for IdentityPromptAugmenter)
+        class FailingAugmenter(BasePromptAugmenter):
             def augment(self, message, **kwargs):
                 raise Exception("Augmenter failed")
 
@@ -255,7 +256,7 @@ class TestPromptOptimizationEnv:
 
     def test_step_with_max_steps_truncation(self):
         """Test step with max_steps truncation."""
-        augmenters = [IdentityPromptAugmenter()]
+        augmenters = [DummyAugmenter(suffix=" step")]
         embedding_model = lambda x: np.zeros(10, dtype=np.float32)
         reward_model = lambda x: 0.0
 
@@ -298,9 +299,108 @@ class TestPromptOptimizationEnv:
 
         env.reset()
         env.step(0)
+        assert "Hello test" in reward_calls
 
-        assert len(reward_calls) == 1
-        assert reward_calls[0] == "Hello test"
+    def test_identity_augmenter_terminates_episode(self):
+        """Test that selecting IdentityPromptAugmenter terminates the episode immediately."""
+        augmenters = [IdentityPromptAugmenter()]
+        embedding_model = lambda x: np.zeros(10, dtype=np.float32)
+        reward_model = lambda x: 0.0
+
+        env = PromptOptimizationEnv(
+            initial_prompt="Test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=10,  # Set high so truncation doesn't interfere
+        )
+
+        env.reset()
+        obs, reward, terminated, truncated, info = env.step(0)
+
+        # Episode should terminate immediately
+        assert terminated is True
+        assert truncated is False
+        assert reward == 0.0
+        assert info["current_prompt"] == "Test"  # Prompt unchanged
+        assert info["step_count"] == 1
+
+    def test_identity_augmenter_in_mixed_augmenters_terminates(self):
+        """Test that IdentityPromptAugmenter terminates even when mixed with other augmenters."""
+        augmenters = [
+            DummyAugmenter(suffix="!"),
+            IdentityPromptAugmenter(),
+            DummyAugmenter(suffix="?"),
+        ]
+        embedding_model = lambda x: np.zeros(10, dtype=np.float32)
+        reward_model = lambda x: 0.0
+
+        env = PromptOptimizationEnv(
+            initial_prompt="Test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+            max_steps=10,
+            min_embedding_threshold=0.0,  # Disable embedding distance termination
+        )
+
+        env.reset()
+        # First, apply a non-identity augmenter
+        obs1, reward1, terminated1, truncated1, info1 = env.step(0)
+        assert terminated1 is False
+        assert info1["current_prompt"] == "Test!"
+
+        # Now apply IdentityPromptAugmenter (action=1) - should terminate
+        obs2, reward2, terminated2, truncated2, info2 = env.step(1)
+        assert terminated2 is True
+        assert truncated2 is False
+        assert reward2 == 0.0
+        assert info2["current_prompt"] == "Test!"  # Prompt unchanged
+        assert info2["step_count"] == 2
+
+    def test_identity_augmenter_does_not_call_reward_model(self):
+        """Test that reward model is not called when IdentityPromptAugmenter terminates."""
+        augmenters = [IdentityPromptAugmenter()]
+        embedding_model = lambda x: np.zeros(10, dtype=np.float32)
+
+        reward_called = []
+
+        def reward_model(prompt):
+            reward_called.append(True)
+            return 0.0
+
+        env = PromptOptimizationEnv(
+            initial_prompt="Test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+        )
+
+        env.reset()
+        env.step(0)
+
+        # Reward model should not be called for IdentityPromptAugmenter
+        assert len(reward_called) == 0
+
+    def test_identity_augmenter_observation_returns_embedding(self):
+        """Test that step with IdentityPromptAugmenter returns the current embedding."""
+        augmenters = [IdentityPromptAugmenter()]
+        expected_embedding = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        embedding_model = lambda x: expected_embedding
+        reward_model = lambda x: 0.0
+
+        env = PromptOptimizationEnv(
+            initial_prompt="Test",
+            augmenters=augmenters,
+            embedding_model=embedding_model,
+            reward_model=reward_model,
+        )
+
+        env.reset()
+        obs, _, terminated, _, _ = env.step(0)
+
+        assert terminated is True
+        np.testing.assert_array_equal(obs, expected_embedding)
 
     def test_embedding_model_called_correctly(self):
         """Test that embedding model is called with the correct prompt."""
