@@ -67,11 +67,6 @@ class SimplePolicy(BasePolicy):
         return values, action_log_probs, entropy, logits
 
 
-# ──────────────────────────────────────────────
-# Fixtures
-# ──────────────────────────────────────────────
-
-
 @pytest.fixture
 def embedding_model():
     """Return a simple embedding model that produces fixed-dimension vectors."""
@@ -133,11 +128,6 @@ def rl_augmenter(env, policy_model):
     return RLPromptAugmenter(env=env, policy_model=policy_model)
 
 
-# ──────────────────────────────────────────────
-# Tests for __init__
-# ──────────────────────────────────────────────
-
-
 class TestRLPromptAugmenterInit:
     """Tests for RLPromptAugmenter.__init__."""
 
@@ -153,11 +143,6 @@ class TestRLPromptAugmenterInit:
             RLPromptAugmenter(env=env)
 
 
-# ──────────────────────────────────────────────
-# Tests for train()
-# ──────────────────────────────────────────────
-
-
 class TestRLPromptAugmenterTrain:
     """Tests to confirm RLPromptAugmenter is inference-only."""
 
@@ -165,11 +150,6 @@ class TestRLPromptAugmenterTrain:
         """RLPromptAugmenter should not expose a training API."""
         with pytest.raises(AttributeError):
             rl_augmenter.train()
-
-
-# ──────────────────────────────────────────────
-# Tests for augment()
-# ──────────────────────────────────────────────
 
 
 class TestRLPromptAugmenterAugment:
@@ -258,11 +238,6 @@ class TestRLPromptAugmenterAugment:
         assert result.context == {"key": "value"}
 
 
-# ──────────────────────────────────────────────
-# Integration / Edge Case Tests
-# ──────────────────────────────────────────────
-
-
 class TestRLPromptAugmenterIntegration:
     """Integration and edge case tests for RLPromptAugmenter."""
 
@@ -323,11 +298,6 @@ class TestRLPromptAugmenterIntegration:
                 reward_model=reward_model,
                 max_steps=2,
             )
-
-
-# ──────────────────────────────────────────────
-# GPT2Policy Tests
-# ──────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -574,11 +544,6 @@ class TestGPT2PolicyIntegration:
         assert param_count > 0
         # Small 1-layer policy should have < 100k params
         assert param_count < 100_000
-
-
-# ──────────────────────────────────────────────
-# Embedding Dimension Tests
-# ──────────────────────────────────────────────
 
 
 class TestEmbeddingDimensionIntegration:

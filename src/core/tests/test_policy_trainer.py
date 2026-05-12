@@ -351,13 +351,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=True,
         )
 
@@ -382,13 +385,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=False,
         )
 
@@ -429,13 +435,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             beta=0.2,
             num_mini_batch=1,
             use_reference_policy=False,
@@ -479,13 +488,16 @@ class TestDPOBasic:
             max_steps=2,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=True,
         )
 
@@ -517,13 +529,16 @@ class TestDPOBasic:
             max_steps=2,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=False,
         )
 
@@ -560,13 +575,16 @@ class TestDPOBasic:
             max_steps=3,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=False,
         )
 
@@ -601,13 +619,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=True,
         )
 
@@ -701,13 +722,16 @@ class TestDPOBasic:
             max_steps=2,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=2,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=True,
         )
 
@@ -749,13 +773,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             num_mini_batch=2,
             use_reference_policy=False,
         )
@@ -796,13 +823,19 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler1 = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        lr_scheduler2 = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo_beta1 = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler1,
             beta=0.1,
             num_mini_batch=1,
             use_reference_policy=False,
@@ -813,7 +846,7 @@ class TestDPOBasic:
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler2,
             beta=0.5,
             num_mini_batch=1,
             use_reference_policy=False,
@@ -858,13 +891,16 @@ class TestDPOBasic:
             max_steps=10,
         )
         torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
 
         dpo = DPOTrainer(
             policy_model=policy,
             env=env,
             max_episodes=1,
             optimizer=torch_optimizer,
-            lr_scheduler=None,
+            lr_scheduler=lr_scheduler,
             use_reference_policy=True,
         )
 
