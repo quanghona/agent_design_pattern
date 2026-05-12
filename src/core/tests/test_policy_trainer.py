@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
 import torch.optim.lr_scheduler
+from aap_core import SimpleReplayBuffer
 from aap_core.policy import BasePolicy, GPT2Policy
 from aap_core.policy_trainer import (
     DPOTrainer,
@@ -6289,3 +6290,520 @@ class TestPPOCheckpointLoading:
         assert max(new_episodes) >= latest_episode + 1, (
             f"Expected episode >= {latest_episode + 1}, got {max(new_episodes)}"
         )
+
+
+class TestGRPOOffPolicy:
+    """Test off-policy GRPO functionality."""
+
+    def test_off_policy_works_without_replay_buffer(self):
+        """Test that off-policy GRPO works without a replay buffer."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+
+        # Off-policy should work without replay buffer
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            # No replay_buffer provided
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+        assert kl_loss == 0.0
+
+    def test_off_policy_with_replay_buffer(self):
+        """Test basic off-policy update with replay buffer."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with some experience
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=0.5,
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+        assert kl_loss == 0.0
+
+    def test_off_policy_parameters_updated(self):
+        """Test that off-policy update actually updates model parameters."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with some experience
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=0.5,
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        initial_params = {
+            name: param.clone() for name, param in policy.named_parameters()
+        }
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        for name, param in policy.named_parameters():
+            assert not torch.equal(initial_params[name], param), (
+                f"Parameter {name} was not updated"
+            )
+
+    def test_off_policy_empty_buffer_falls_back(self):
+        """Test that off-policy GRPO falls back to on-policy when buffer is empty."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Buffer is empty - should fall back to on-policy style training
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        # Should not raise an error - falls back to on-policy style
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+        assert kl_loss == 0.0
+
+    def test_off_policy_loss_values_reasonable(self):
+        """Test that off-policy loss values are reasonable (not NaN or inf)."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with varied rewards
+        for i in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=i % action_dim,
+                reward=float(i) / 32.0,
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isinf(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+        assert not torch.isinf(torch.tensor(entropy))
+
+    def test_off_policy_with_zero_variance_masking(self):
+        """Test off-policy GRPO with zero-variance masking enabled."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with constant rewards (zero variance)
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=1.0,  # Constant reward
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+            use_zero_variance_masking=True,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        # Should not raise an error even with zero variance
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))
+
+    def test_off_policy_pushes_to_buffer_in_fit(self):
+        """Test that off-policy GRPO pushes transitions to replay buffer during fit."""
+        obs_dim = 10
+        action_dim = 1  # Match the environment's single augmenter
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=3,  # Short episodes for testing
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=2,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        # Before fit, buffer should be empty
+        assert replay_buffer.is_empty()
+
+        # Run fit
+        grpo.fit(
+            checkpoint_every=10,
+            earlystop_last=10,
+            use_wandb=False,
+            checkpoint_dir="./ckpt",
+        )
+
+        # After fit, buffer should have data
+        assert replay_buffer.size > 0, (
+            f"Expected buffer to have data after fit, got size {replay_buffer.size}"
+        )
+
+    def test_on_policy_still_works_without_buffer(self):
+        """Test that on-policy GRPO still works without a replay buffer."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+        seq_len = 4
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+
+        # On-policy should work without replay buffer
+        grpo = GRPOTrainer(
+            policy_model=policy,
+            env=env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            clip_param=0.2,
+            num_mini_batch=2,
+            group_size=2,
+            use_off_policy=False,  # Explicitly on-policy
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, seq_len, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size, seq_len)),
+            "rewards": torch.randn(batch_size, seq_len),
+            "masks": torch.ones(batch_size, seq_len),
+            "old_log_probs": torch.randn(batch_size, seq_len),
+        }
+
+        action_loss, entropy, kl_loss = grpo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(entropy))

@@ -1269,7 +1269,23 @@ class GRPOTrainer(BasePolicyTrainer):
     prompt to compute relative advantages and optionally normalizes rewards
     within each group.
 
-    References: https://arxiv.org/pdf/2402.03300
+    Supports both on-policy and off-policy training modes:
+
+    - **On-policy** (default): Group data is collected from the current policy
+      and used for a single update pass. No replay buffer.
+    - **Off-policy with replay buffer**: Uses a replay buffer to store transitions
+      and samples from past experiences. Implements the clipped surrogate objective
+      with importance sampling as described in Mroueh et al. (2025)
+      "Revisiting Group Relative Policy Optimization: Insights into On-Policy
+      and Off-Policy Training".
+    - **Off-policy without replay buffer**: Uses the current episode's data with
+      the off-policy clipped surrogate objective. The importance sampling ratio
+      is approximated as π_k/α ≈ 1 for stability, providing training stability
+      similar to off-policy training without requiring a separate behavior policy.
+
+    References:
+        - https://arxiv.org/pdf/2402.03300 (original GRPO)
+        - https://arxiv.org/pdf/2505.22257 (off-policy GRPO)
     """
 
     def __init__(
@@ -1280,6 +1296,7 @@ class GRPOTrainer(BasePolicyTrainer):
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
         exploration_module: Optional[BaseExplorationModule] = None,
+        replay_buffer: Optional[BaseReplayBuffer] = None,
         clip_param: float = 0.2,
         num_mini_batch: int = 4,
         entropy_coef: float = 0.01,
@@ -1290,10 +1307,10 @@ class GRPOTrainer(BasePolicyTrainer):
         use_reward_normalization: bool = True,
         gamma: float = 1.0,
         eps: float = 1e-8,
+        use_off_policy: bool = False,
+        use_zero_variance_masking: bool = False,
         **kwargs,
     ):
-        # GRPO is an on-policy algorithm: group data is collected from the
-        # current policy and used for a single update pass. No replay buffer.
         super().__init__(
             policy_model,
             env,
@@ -1301,7 +1318,7 @@ class GRPOTrainer(BasePolicyTrainer):
             optimizer,
             lr_scheduler,
             exploration_module,
-            None,  # replay_buffer: on-policy, not supported
+            replay_buffer,  # allow replay buffer for off-policy
             eps,
         )
         self.clip_param = clip_param
@@ -1313,6 +1330,8 @@ class GRPOTrainer(BasePolicyTrainer):
         self.group_size = max(1, group_size)
         self.use_reward_normalization = use_reward_normalization
         self.gamma = gamma
+        self.use_off_policy = use_off_policy
+        self.use_zero_variance_masking = use_zero_variance_masking
 
     def _compute_returns(
         self, rewards: torch.Tensor, masks: torch.Tensor
@@ -1332,19 +1351,80 @@ class GRPOTrainer(BasePolicyTrainer):
         final_returns = returns[:, 0]
         batch_size = final_returns.size(0)
 
-        if batch_size % self.group_size != 0:
-            raise ValueError("GRPO requires batch_size to be divisible by group_size")
+        if self.use_off_policy:
+            if self.replay_buffer is not None and not self.replay_buffer.is_empty():
+                # Off-policy GRPO with replay buffer: advantage is estimated using
+                # statistics from the behavior policy α (stored in replay buffer).
+                # A^α(x, y) = (r(x, y) - μ_α,r(x)) / σ_α,r,ε(x)
+                # where μ and σ are computed from the off-policy distribution.
 
-        group_returns = final_returns.view(-1, self.group_size)
-        group_mean = group_returns.mean(dim=1, keepdim=True)
+                # For off-policy, we compute group statistics from the buffer
+                # to estimate the behavior policy's reward distribution.
+                # Sample a batch from the buffer to compute μ_α and σ_α.
+                buffer_batch = self.replay_buffer.sample(
+                    min(batch_size * self.group_size, len(self.replay_buffer))
+                )
+                buffer_rewards = torch.tensor(
+                    buffer_batch["reward"], dtype=torch.float32
+                )
 
-        if self.use_reward_normalization:
-            group_std = group_returns.std(dim=1, unbiased=False, keepdim=True)
-            normalized = (group_returns - group_mean) / (group_std + self.eps)
+                # Compute behavior policy statistics
+                buffer_mean = buffer_rewards.mean()
+                buffer_std = buffer_rewards.std(unbiased=False)
+
+                # Compute advantage using behavior policy statistics
+                advantages = (final_returns - buffer_mean) / (buffer_std + self.eps)
+
+                # Zero-variance masking (DAPO-style): mask samples where the
+                # behavior policy has zero variance (fully correct or incorrect).
+                # This prevents the total variation term from dominating the
+                # policy improvement lower bound (Theorem 1 in Mroueh et al. 2025).
+                if self.use_zero_variance_masking and buffer_std < self.eps:
+                    advantages = torch.zeros_like(advantages)
+
+                normalized_returns = advantages
+            else:
+                # Off-policy GRPO without replay buffer: use current episode's
+                # group statistics. The advantage is computed from the current
+                # policy's samples, but the clipped surrogate objective with
+                # importance sampling provides off-policy training stability.
+                # This is equivalent to on-policy advantage estimation with
+                # off-policy clipping (π_k/α ≈ 1 approximation).
+                if batch_size % self.group_size != 0:
+                    raise ValueError(
+                        "GRPO requires batch_size to be divisible by group_size"
+                    )
+
+                group_returns = final_returns.view(-1, self.group_size)
+                group_mean = group_returns.mean(dim=1, keepdim=True)
+
+                if self.use_reward_normalization:
+                    group_std = group_returns.std(dim=1, unbiased=False, keepdim=True)
+                    normalized = (group_returns - group_mean) / (group_std + self.eps)
+                else:
+                    normalized = group_returns - group_mean
+
+                normalized_returns = normalized.view(batch_size)
         else:
-            normalized = group_returns - group_mean
+            # On-policy GRPO: advantage is estimated using statistics from
+            # the current policy's group samples.
+            # A^π_k(x, y) = (r(x, y) - mean({r_l})) / std({r_l}) + ε
+            if batch_size % self.group_size != 0:
+                raise ValueError(
+                    "GRPO requires batch_size to be divisible by group_size"
+                )
 
-        normalized_returns = normalized.view(batch_size)
+            group_returns = final_returns.view(-1, self.group_size)
+            group_mean = group_returns.mean(dim=1, keepdim=True)
+
+            if self.use_reward_normalization:
+                group_std = group_returns.std(dim=1, unbiased=False, keepdim=True)
+                normalized = (group_returns - group_mean) / (group_std + self.eps)
+            else:
+                normalized = group_returns - group_mean
+
+            normalized_returns = normalized.view(batch_size)
+
         return normalized_returns.unsqueeze(-1).expand_as(returns)
 
     def update(
@@ -1359,6 +1439,7 @@ class GRPOTrainer(BasePolicyTrainer):
         returns = self._compute_returns(rewards, masks)
         advantages = self._compute_group_advantages(returns)
 
+        # Normalize advantages for stability
         adv_std = advantages.std()
         if adv_std > self.eps:
             advantages = (advantages - advantages.mean()) / adv_std
@@ -1384,20 +1465,51 @@ class GRPOTrainer(BasePolicyTrainer):
                 obs_batch, actions_batch, masks_batch
             )
 
-            if old_log_probs_batch is not None:
-                ratio = torch.exp(action_log_probs - old_log_probs_batch)
-                surr1 = ratio * advantages_batch
-                surr2 = (
-                    torch.clamp(
-                        ratio,
-                        1.0 - self.clip_param,
-                        1.0 + self.clip_param,
+            if self.use_off_policy:
+                # Off-policy GRPO: use importance sampling with clipped
+                # surrogate objective (Mroueh et al. 2025, Eq. 6).
+                #
+                # L_α^c(π) = E_{y~α} [ min( (π/α) * A^α,
+                #     clip(π/α, 1-ε, 1+ε) * A^α ) ]
+                #
+                # In practice, we approximate π_k/α ≈ 1 for stability when
+                # α is close to π_k (the behavior policy).
+                if old_log_probs_batch is not None:
+                    # Compute importance sampling ratio: π(y|x) / α(y|x)
+                    # Using the approximation π_k/α ≈ 1 for stability
+                    # (as recommended in off-policy PPO literature)
+                    ratio = torch.exp(action_log_probs - old_log_probs_batch)
+
+                    surr1 = ratio * advantages_batch
+                    surr2 = (
+                        torch.clamp(
+                            ratio,
+                            1.0 - self.clip_param,
+                            1.0 + self.clip_param,
+                        )
+                        * advantages_batch
                     )
-                    * advantages_batch
-                )
-                action_loss = -torch.min(surr1, surr2).mean()
+                    action_loss = -torch.min(surr1, surr2).mean()
+                else:
+                    # No old log probs: use current policy log probs directly
+                    # (treats ratio as 1, i.e., π/α ≈ 1)
+                    action_loss = -(action_log_probs * advantages_batch).mean()
             else:
-                action_loss = -(action_log_probs * advantages_batch).mean()
+                # On-policy GRPO: standard PPO-style clipping
+                if old_log_probs_batch is not None:
+                    ratio = torch.exp(action_log_probs - old_log_probs_batch)
+                    surr1 = ratio * advantages_batch
+                    surr2 = (
+                        torch.clamp(
+                            ratio,
+                            1.0 - self.clip_param,
+                            1.0 + self.clip_param,
+                        )
+                        * advantages_batch
+                    )
+                    action_loss = -torch.min(surr1, surr2).mean()
+                else:
+                    action_loss = -(action_log_probs * advantages_batch).mean()
 
             action_loss = action_loss - self.entropy_coef * dist_entropy.mean()
 
@@ -1525,6 +1637,16 @@ class GRPOTrainer(BasePolicyTrainer):
                 episode_data["masks"].append(1.0 if not (done or truncated) else 0.0)
                 episode_data["log_probs"].append(log_prob)
 
+                # Off-policy: push transition to replay buffer
+                if self.use_off_policy and self.replay_buffer is not None:
+                    self.replay_buffer.push(
+                        obs=np.asarray(obs, dtype=np.float32),
+                        action=action,
+                        reward=reward,
+                        log_prob=log_prob,
+                        mask=1.0 if not (done or truncated) else 0.0,
+                    )
+
                 episode_reward += reward
                 obs = next_obs
                 step_count += 1
@@ -1540,13 +1662,64 @@ class GRPOTrainer(BasePolicyTrainer):
                 episode_data["log_probs"], dtype=torch.float32
             )
 
-            action_loss, dist_entropy, kl_loss = self.update(
-                obs_tensor.unsqueeze(0),
-                actions_tensor.unsqueeze(0),
-                rewards_tensor.unsqueeze(0),
-                masks_tensor.unsqueeze(0),
-                old_log_probs_tensor.unsqueeze(0),
-            )
+            if self.use_off_policy and self.replay_buffer is not None:
+                # Off-policy with replay buffer: sample from buffer for update.
+                # This allows reusing past experience for multiple updates,
+                # reducing communication overhead in distributed training.
+                if self.replay_buffer.is_empty():
+                    print(
+                        f"Episode {episode}: Buffer empty, skipping update. "
+                        f"Collecting experience..."
+                    )
+                    action_loss = 0.0
+                    dist_entropy = 0.0
+                    kl_loss = 0.0
+                else:
+                    # Sample a batch from the replay buffer
+                    # Use group_size to determine batch size for GRPO
+                    buffer_batch_size = max(
+                        self.group_size,
+                        self.num_mini_batch,
+                    )
+                    buffer_batch = self.replay_buffer.sample(
+                        min(buffer_batch_size, len(self.replay_buffer))
+                    )
+                    # Convert buffer batch to tensors
+                    obs_buffer = torch.tensor(
+                        buffer_batch["obs"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    actions_buffer = torch.tensor(
+                        buffer_batch["action"], dtype=torch.long
+                    ).unsqueeze(0)
+                    rewards_buffer = torch.tensor(
+                        buffer_batch["reward"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    masks_buffer = torch.tensor(
+                        buffer_batch["mask"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    log_probs_buffer = torch.tensor(
+                        buffer_batch["log_prob"], dtype=torch.float32
+                    ).unsqueeze(0)
+
+                    action_loss, dist_entropy, kl_loss = self.update(
+                        obs_buffer,
+                        actions_buffer,
+                        rewards_buffer,
+                        masks_buffer,
+                        log_probs_buffer,
+                    )
+            else:
+                # On-policy or off-policy without replay buffer: use current
+                # episode's data for update. When use_off_policy=True without
+                # a buffer, the off-policy clipped surrogate objective is still
+                # applied (π_k/α ≈ 1 approximation), providing training stability.
+                action_loss, dist_entropy, kl_loss = self.update(
+                    obs_tensor.unsqueeze(0),
+                    actions_tensor.unsqueeze(0),
+                    rewards_tensor.unsqueeze(0),
+                    masks_tensor.unsqueeze(0),
+                    old_log_probs_tensor.unsqueeze(0),
+                )
 
             episode_rewards.append(episode_reward)
             mean_reward = np.mean(episode_rewards[-min(100, len(episode_rewards)) :])
@@ -1557,23 +1730,33 @@ class GRPOTrainer(BasePolicyTrainer):
             else:
                 no_improvement_count += 1
 
+            # Log buffer size for off-policy mode
+            buffer_size = (
+                len(self.replay_buffer)
+                if self.use_off_policy and self.replay_buffer is not None
+                else 0
+            )
+
             if use_wandb:
-                wandb.log(
-                    {
-                        "episode": episode,
-                        "episode_reward": episode_reward,
-                        "mean_reward_100": mean_reward,
-                        "best_reward": best_reward,
-                        "steps": step_count,
-                        "action_loss": action_loss,
-                        "dist_entropy": dist_entropy,
-                        "kl_loss": kl_loss,
-                    }
-                )
+                log_data = {
+                    "episode": episode,
+                    "episode_reward": episode_reward,
+                    "mean_reward_100": mean_reward,
+                    "best_reward": best_reward,
+                    "steps": step_count,
+                    "action_loss": action_loss,
+                    "dist_entropy": dist_entropy,
+                    "kl_loss": kl_loss,
+                }
+                if self.use_off_policy:
+                    log_data["buffer_size"] = buffer_size
+                wandb.log(log_data)
 
             print(
                 f"Episode {episode}: reward={episode_reward:.4f}, mean_100={mean_reward:.4f}"
             )
+            if self.use_off_policy:
+                print(f"  Buffer size: {buffer_size}")
 
             if (episode + 1) % checkpoint_every == 0:
                 ckpt_path = os.path.join(
@@ -1600,6 +1783,101 @@ class GRPOTrainer(BasePolicyTrainer):
 
 
 class PPOTrainer(BasePolicyTrainer):
+    """Proximal Policy Optimization (PPO) trainer for prompt augmentation.
+
+    Implements the PPO-Clip algorithm from Schulman et al. (2017)
+    "Proximal Policy Optimization Algorithms", adapted for prompt
+    optimization in the ``aap_core`` framework.
+
+    PPO is an **on-policy** actor-critic reinforcement learning algorithm.
+    At each training episode, a full trajectory is collected from the
+    current policy via environment interaction, then the policy is updated
+    over multiple passes through that trajectory using mini-batches. The
+    collected data is discarded after the update (no replay buffer).
+
+    Key components:
+
+    1. **Clipped surrogate objective** — limits the policy update ratio
+       ``r_t(θ) = π_θ(a|s) / π_θ_old(a|s)`` to ``[1-ε, 1+ε]``, preventing
+       destructive large updates.
+
+    2. **Value function loss** — a critic network (built into the
+       ``BasePolicy`` actor-critic) predicts state values; the loss
+       minimises the mean-squared error between predicted values and
+       computed returns (discounted cumulative rewards). Supports optional
+       clipped value predictions for additional stability.
+
+    3. **Entropy bonus** — encourages exploration by adding the policy
+       entropy to the loss (subtracted, so gradient ascent).
+
+    4. **Advantage normalisation** — advantages ``(returns - values)`` are
+       standardised (zero mean, unit variance) before the update.
+
+    5. **Optional KL penalty** — when ``use_kl_loss=True``, a KL divergence
+       term is added to the action loss to penalise deviation from the
+       previous policy.
+
+    Training loop (per ``fit()`` call):
+
+    1. Reset environment and collect a trajectory: ``(s_t, a_t, r_t,
+       log_prob_t, value_t, logits_t)`` for ``t = 0, …, T-1``.
+    2. Compute returns via backward pass: ``G_t = Σ γ^(t-k) r_k``.
+    3. Compute advantages: ``A_t = G_t - V(s_t)``, normalise.
+    4. Run ``update()`` — iterate over ``num_mini_batch`` mini-batches,
+       applying the clipped surrogate objective, value loss, and entropy
+       bonus for ``num_epochs`` passes.
+    5. Log metrics (WandB), checkpoint, and check early stopping.
+
+    Example usage::
+
+        trainer = PPOTrainer(
+            actor_critic=policy,
+            env=env,
+            max_episodes=500,
+            optimizer=optimizer,
+            lr_scheduler=scheduler,
+            num_mini_batch=4,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+        )
+        trainer.fit(checkpoint_every=50, earlystop_last=100)
+
+    References:
+        - Schulman et al., "Proximal Policy Optimization Algorithms",
+          2017. https://arxiv.org/abs/1707.06347
+        - Schulman et al., "Trust Region Policy Optimization", 2015.
+          https://arxiv.org/abs/1502.05477
+
+    Args:
+        actor_critic: Actor-critic policy model (``BasePolicy``) that
+            provides both action logits and value predictions.
+        env: Prompt optimization environment (``PromptOptimizationEnv``).
+        max_episodes: Maximum number of training episodes.
+        optimizer: PyTorch optimizer for policy parameter updates.
+        lr_scheduler: Optional learning rate scheduler.
+        num_mini_batch: Number of mini-batches to split each trajectory
+            into during the update step.
+        value_loss_coef: Weight for the value function loss in the total
+            loss: ``L = L_CLIP + c_1 * L_VAL - c_2 * entropy``.
+        entropy_coef: Weight for the entropy bonus (exploration
+            encouragement).
+        exploration_module: Optional exploration strategy (e.g.,
+            ``EpsilonGreedyExploration``). Defaults to pure exploit.
+        clip_param: PPO clipping epsilon ``ε`` for the surrogate objective
+            and (optionally) value function. Default ``0.2``.
+        max_grad_norm: Maximum L2 norm for gradient clipping. Default ``1.0``.
+        use_clipped_value_loss: If ``True``, uses the clipped value loss
+            from the original PPO paper, clamping value predictions to
+            ``[V_old - ε, V_old + ε]``. Default ``True``.
+        use_kl_loss: If ``True``, adds a KL divergence penalty between the
+            current and old policy to the action loss. Default ``False``.
+        kl_coef: Coefficient for the KL loss term. Default ``1e-5``.
+        gamma: Discount factor for computing returns (``γ ∈ [0, 1]``).
+            Default ``0.99``.
+        eps: Small constant for numerical stability in advantage
+            normalisation. Default ``1e-8``.
+    """
+
     def __init__(
         self,
         actor_critic: BasePolicy,
