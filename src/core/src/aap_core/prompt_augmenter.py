@@ -118,8 +118,10 @@ class MetaPromptAugmenter(BasePromptAugmenter):
         return message
 
 
-DataSet = Sequence[Tuple[str, str]]
-PerformanceTuple = Tuple[Sequence[float], float]
+DataSet = Sequence[Tuple[str, str]]  # A dataset is a sequence of input-output pairs
+PerformanceTuple = Tuple[
+    Sequence[float], float
+]  # A performance tuple contains a performance vector and a performance score
 
 
 class SEEPromptAugmenter(BasePromptAugmenter):
@@ -131,7 +133,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     SEE uses LLM operators to perform generation and variation. There are 5 operators introduced in the work:
     - Lamarckian: reverse engineering by generating prompt from a set of input-output pairs
-    - EDA (Estimation of Distribution): takes in a group of candidates and otuputs a new candidat by studying the input group.
+    - EDA (Estimation of Distribution): takes in a group of candidates and outputs a new candidate by studying the input group.
     - Crossover: mixing the traits of both parents and generates a new candidate
     - Feedback: use 2 agents - Examiner and Improver to generate new candidate
     - Semantic: modifies the candidate lexically while preserving its semantic meaning
@@ -386,6 +388,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         distance_threshold: int = 2,
     ) -> PerformanceTuple | None:
         perf_vec, score = self.score(prompt, dataset)
+        # If pool is empty (first iteration), accept the candidate
+        if len(performance_pool) == 0:
+            return (perf_vec, score)
         # can only check with lowest score candidate
         min_dist = min(
             SEEPromptAugmenter._hamming_distance(perf_vec, p[0])
@@ -394,14 +399,15 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         # Found similar candidate -> NOT use this prompt
         return None if min_dist < distance_threshold else (perf_vec, score)
 
-
     @classmethod
     def _sort_pool(
         cls, P_t: list[str], S_t: list[PerformanceTuple], pool_size: int
     ) -> Tuple[List[str], List[PerformanceTuple]]:
-        sorted_indices = np.argsort(S_t)
+        # S_t elements are PerformanceTuple = (performance_vector, score)
+        # Sort by score (index 1) in descending order
+        sorted_indices = np.argsort([s[1] for s in S_t])[::-1]
         P_t = [P_t[i] for i in sorted_indices]
-        S_t = sorted(S_t, reverse=True)
+        S_t = [S_t[i] for i in sorted_indices]
         return P_t[:pool_size], S_t[:pool_size]
 
     @classmethod
@@ -1213,4 +1219,3 @@ class RLPromptAugmenter(BasePromptAugmenter):
 
         message.query = info["current_prompt"]
         return message
-

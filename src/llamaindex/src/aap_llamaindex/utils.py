@@ -3,7 +3,7 @@ from typing import Union
 from llama_index.core.callbacks.token_counting import get_tokens_from_response
 from llama_index.core.llms import ChatResponse, CompletionResponse
 
-from core.src.aap_core.types import TokenUsage
+from aap_core.types import TokenUsage
 
 
 def token_from_response(usage: Union[CompletionResponse, ChatResponse]) -> TokenUsage:
