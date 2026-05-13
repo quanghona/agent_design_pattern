@@ -35,6 +35,10 @@ class ReflectionAgent(BaseAgent):
         ...,
         description="LLM chain that perform reflection on the result of the main task",
     )
+    task_response_key: str = Field(
+        default="context_response",
+        description="The key to use for the task response in the message context.",
+    )
 
     @field_validator("task_response_key")
     @classmethod
@@ -309,7 +313,7 @@ class CoordinatorAgent(BaseAgent):
         description="""The prompt that will be used by the summary chain""",
     )
     summary_steps_key: str = Field(
-        "context_results",
+        default="context_results",
         description="""The key of which to store the context (e.g. intermediate result) during generation.
         Note that the key need to start with 'context_'""",
     )
