@@ -41,6 +41,8 @@ dev = [
     "langchain-community>=0.4.1",
     "langchain-huggingface>=1.2.0",
     "sentence-transformers>=5.2.0",
+    "pytest>=9.0.3",
+    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]

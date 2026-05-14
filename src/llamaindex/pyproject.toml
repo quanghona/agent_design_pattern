@@ -37,6 +37,8 @@ dev = [
     "ipykernel",
     "torch",
     "llama-index-embeddings-huggingface>=0.6.1",
+    "pytest>=9.0.3",
+    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]

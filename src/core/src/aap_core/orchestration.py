@@ -334,6 +334,53 @@ class CoordinatorAgent(BaseAgent):
             return message
 
         steps = self.parse_plan(message, self.workers)
+
+        # Validate parsed plan
+        if not steps:
+            self.state = "idle"
+            message.execution_result = "error"
+            message.error_message = (
+                "Plan parsing failed: no steps returned from parse_plan"
+            )
+            return message
+
+        if not isinstance(steps, Sequence):
+            self.state = "idle"
+            message.execution_result = "error"
+            message.error_message = (
+                f"Plan parsing failed: expected Sequence, got {type(steps)}"
+            )
+            return message
+
+        for i, step in enumerate(steps):
+            if not isinstance(step, tuple) or len(step) != 3:
+                self.state = "idle"
+                message.execution_result = "error"
+                message.error_message = f"Plan parsing failed: step {i} is not a valid tuple of (message, agent, dependencies)"
+                return message
+            step_msg, step_agent, dependencies = step
+            if not isinstance(step_msg, AgentMessage):
+                self.state = "idle"
+                message.execution_result = "error"
+                message.error_message = (
+                    f"Plan parsing failed: step {i} message is not an AgentMessage"
+                )
+                return message
+            if not isinstance(step_agent, BaseAgent):
+                self.state = "idle"
+                message.execution_result = "error"
+                message.error_message = (
+                    f"Plan parsing failed: step {i} agent is not a BaseAgent"
+                )
+                return message
+            if not isinstance(dependencies, list):
+                self.state = "idle"
+                message.execution_result = "error"
+                message.error_message = (
+                    f"Plan parsing failed: step {i} dependencies is not a list"
+                )
+                return message
+
         sub_task_result = []
         # TODO: check step dependency and parallelize steps to speed up
         summary_steps_key = self.summary_steps_key.replace("context_", "")
@@ -524,7 +571,7 @@ class VotingAgent(BaseAgent):
                 scorer = rouge_scorer.RougeScorer([self.scorer], use_stemmer=True)
 
                 def rouge_score(hyp: str, ref: str) -> float:
-                    return scorer.score(ref, hyp)[self.scorer]
+                    return list(scorer.score(ref, hyp).values())[0].fmeasure
 
                 score_func = rouge_score
             else:
@@ -533,7 +580,7 @@ class VotingAgent(BaseAgent):
             scores = {agent.card.name: 0.0 for agent in self.agents}
             message_map = {name: msg for name, msg in message.responses}
             for agent_name, msg in message.responses:
-                total_score = 0
+                total_score = 0.0
                 for other_agent in self.agents:
                     if agent_name == other_agent.card.name:
                         continue

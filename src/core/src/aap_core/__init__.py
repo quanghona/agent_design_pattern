@@ -7,6 +7,7 @@ from aap_core.policy_trainer import (
     PPOTrainer,
     RandomExploration,
     ReinforcePPTrainer,
+    SimpleReplayBuffer,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "PPOTrainer",
     "RandomExploration",
     "ReinforcePPTrainer",
+    "SimpleReplayBuffer",
 ]

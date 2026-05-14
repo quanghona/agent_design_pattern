@@ -144,11 +144,14 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
             MessageRole.SYSTEM: "system",
         }
         for i in range(start_index, end_index):
-            if len(conversation[i].blocks) == 1 and isinstance(
-                conversation[i].blocks[0], TextBlock
-            ):
+            # Extract text from all TextBlocks in the message
+            text_parts = []
+            for block in conversation[i].blocks:
+                if isinstance(block, TextBlock):
+                    text_parts.append(block.text)
+            if text_parts:
                 message.responses.append(
-                    (name_map[conversation[i].role], conversation[i].blocks[0].text)  # type: ignore
+                    (name_map[conversation[i].role], "\n".join(text_parts))  # type: ignore
                 )
             # TODO: handle other modals later
 
