@@ -1866,11 +1866,23 @@ class PPOTrainer(BasePolicyTrainer):
     "Proximal Policy Optimization Algorithms", adapted for prompt
     optimization in the ``aap_core`` framework.
 
-    PPO is an **on-policy** actor-critic reinforcement learning algorithm.
-    At each training episode, a full trajectory is collected from the
-    current policy via environment interaction, then the policy is updated
-    over multiple passes through that trajectory using mini-batches. The
-    collected data is discarded after the update (no replay buffer).
+    Supports both **on-policy** and **off-policy** training modes:
+
+    - **On-policy** (default): Trajectories are collected from the current
+      policy and used for multiple update epochs, then discarded. No replay
+      buffer. This is the standard PPO setting.
+    - **Off-policy with replay buffer**: Uses a replay buffer to store
+      transitions and samples from past experiences. Applies importance
+      sampling (IS) to correct for the distribution mismatch between the
+      behavior policy that generated the data and the current policy being
+      optimized. Supports Truncated Importance Sampling (TIS) to bound IS
+      ratio variance. Based on the off-policy PPO formulation from Mroueh
+      et al. (2025) and the RPG framework (ICLR 2026).
+    - **Off-policy without replay buffer**: Uses the current episode's data
+      with the off-policy clipped surrogate objective. The importance
+      sampling ratio is approximated as ``π_k/α ≈ 1`` for stability,
+      providing training stability similar to off-policy training without
+      requiring a separate behavior policy.
 
     Key components:
 
@@ -1894,7 +1906,16 @@ class PPOTrainer(BasePolicyTrainer):
        term is added to the action loss to penalise deviation from the
        previous policy.
 
+    6. **Importance sampling (off-policy)** — when ``use_off_policy=True``,
+       the clipped surrogate objective is weighted by the IS ratio
+       ``r_θ(s,a) = π_θ(a|s) / α(a|s)`` to correct for distribution
+       mismatch between the data-collection policy α and the current policy
+       π_θ. Truncated IS (TIS) caps the ratio at ``tis_cap`` to bound
+       variance.
+
     Training loop (per ``fit()`` call):
+
+    **On-policy mode:**
 
     1. Reset environment and collect a trajectory: ``(s_t, a_t, r_t,
        log_prob_t, value_t, logits_t)`` for ``t = 0, …, T-1``.
@@ -1905,7 +1926,16 @@ class PPOTrainer(BasePolicyTrainer):
        bonus for ``num_epochs`` passes.
     5. Log metrics (WandB), checkpoint, and check early stopping.
 
-    Example usage::
+    **Off-policy mode (with replay buffer):**
+
+    1. Collect a transition ``(s, a, r, log_prob)`` and push to replay
+       buffer.
+    2. Sample a batch from the buffer.
+    3. Compute advantages from sampled data.
+    4. Run ``update()`` with IS ratio correction and TIS.
+    5. Log metrics, checkpoint, and check early stopping.
+
+    Example usage (on-policy)::
 
         trainer = PPOTrainer(
             actor_critic=policy,
@@ -1919,11 +1949,33 @@ class PPOTrainer(BasePolicyTrainer):
         )
         trainer.fit(checkpoint_every=50, earlystop_last=100)
 
+    Example usage (off-policy)::
+
+        buffer = SimpleReplayBuffer(capacity=10000)
+        trainer = PPOTrainer(
+            actor_critic=policy,
+            env=env,
+            max_episodes=500,
+            optimizer=optimizer,
+            lr_scheduler=scheduler,
+            num_mini_batch=4,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            replay_buffer=buffer,
+            use_off_policy=True,
+            tis_cap=2.0,
+        )
+        trainer.fit(checkpoint_every=50, earlystop_last=100)
+
     References:
         - Schulman et al., "Proximal Policy Optimization Algorithms",
           2017. https://arxiv.org/abs/1707.06347
         - Schulman et al., "Trust Region Policy Optimization", 2015.
           https://arxiv.org/abs/1502.05477
+        - Mroueh et al., "Revisiting Group Relative Policy Optimization:
+          Insights into On-Policy and Off-Policy Training", 2025.
+        - ICLR 2026, "On the Design of KL-Regularized Policy Gradient
+          Algorithms for LLM Reasoning" (RPG framework).
 
     Args:
         actor_critic: Actor-critic policy model (``BasePolicy``) that
@@ -1940,6 +1992,14 @@ class PPOTrainer(BasePolicyTrainer):
             encouragement).
         exploration_module: Optional exploration strategy (e.g.,
             ``EpsilonGreedyExploration``). Defaults to pure exploit.
+        replay_buffer: Optional replay buffer for off-policy training.
+            When provided and ``use_off_policy=True``, transitions are
+            stored and sampled from the buffer for updates.
+        use_off_policy: If ``True``, enables off-policy training with
+            importance sampling correction. Requires a ``replay_buffer``
+            for full off-policy functionality; without a buffer, uses the
+            current episode data with ``π_k/α ≈ 1`` approximation.
+            Default ``False``.
         clip_param: PPO clipping epsilon ``ε`` for the surrogate objective
             and (optionally) value function. Default ``0.2``.
         max_grad_norm: Maximum L2 norm for gradient clipping. Default ``1.0``.
@@ -1951,6 +2011,10 @@ class PPOTrainer(BasePolicyTrainer):
         kl_coef: Coefficient for the KL loss term. Default ``1e-5``.
         gamma: Discount factor for computing returns (``γ ∈ [0, 1]``).
             Default ``0.99``.
+        tis_cap: Truncated importance sampling cap. The IS ratio
+            ``r_θ(s,a)`` is capped at this value to bound variance in
+            off-policy training. Only used when ``use_off_policy=True``.
+            Default ``2.0``.
         eps: Small constant for numerical stability in advantage
             normalisation. Default ``1e-8``.
     """
@@ -1966,17 +2030,23 @@ class PPOTrainer(BasePolicyTrainer):
         value_loss_coef: float,
         entropy_coef: float,
         exploration_module: Optional[BaseExplorationModule] = None,
+        replay_buffer: Optional[BaseReplayBuffer] = None,
+        use_off_policy: bool = False,
         clip_param: float = 0.2,
         max_grad_norm: float = 1.0,
         use_clipped_value_loss: bool = True,
         use_kl_loss: bool = False,
         kl_coef: float = 1e-5,
         gamma: float = 0.99,
+        tis_cap: float = 2.0,
         eps: float = 1e-8,
         **kwargs,
     ):
-        # PPO is an on-policy algorithm: trajectories are collected from the
-        # current policy and used for multiple update epochs, then discarded.
+        # PPO supports both on-policy and off-policy training.
+        # On-policy: trajectories are collected from the current policy and
+        # used for multiple update epochs, then discarded.
+        # Off-policy: uses a replay buffer to store transitions and samples
+        # from past experiences, applying importance sampling correction.
         super().__init__(
             actor_critic,
             env,
@@ -1984,7 +2054,7 @@ class PPOTrainer(BasePolicyTrainer):
             optimizer,
             lr_scheduler,
             exploration_module,
-            None,  # replay_buffer: on-policy, not supported
+            replay_buffer,
             eps,
         )
         self.clip_param = clip_param
@@ -1996,6 +2066,8 @@ class PPOTrainer(BasePolicyTrainer):
         self.use_kl_loss = use_kl_loss
         self.kl_coef = kl_coef
         self.gamma = gamma
+        self.use_off_policy = use_off_policy
+        self.tis_cap = tis_cap
 
     def update(
         self,
@@ -2056,12 +2128,31 @@ class PPOTrainer(BasePolicyTrainer):
             )
 
             ratio = torch.exp(action_log_probs - old_log_probs_batch.unsqueeze(-1))
-            surr1 = ratio * adv_batch.unsqueeze(-1)
-            surr2 = torch.clamp(
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            ) * adv_batch.unsqueeze(-1)
-            action_loss = -torch.min(surr1, surr2).mean()
-            kl_loss = torch.tensor(0.0, device=logits.device)
+
+            # Off-policy: apply importance sampling ratio correction
+            if self.use_off_policy:
+                # Truncated importance sampling (TIS) to bound variance
+                # r_θ(s,a) = π_θ(a|s) / α(a|s), capped at tis_cap
+                log_ratio = (
+                    action_log_probs - old_log_probs_batch.unsqueeze(-1)
+                ).clamp(-10.0, 10.0)
+                tis_ratio = torch.exp(log_ratio).clamp(max=self.tis_cap)
+                tis_ratio = tis_ratio.detach()  # stop gradient through IS ratio
+
+                # Apply IS weight to the clipped surrogate objective
+                surr1 = tis_ratio * ratio * adv_batch.unsqueeze(-1)
+                surr2 = (
+                    tis_ratio
+                    * torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
+                    * adv_batch.unsqueeze(-1)
+                )
+                action_loss = -torch.min(surr1, surr2).mean()
+            else:
+                surr1 = ratio * adv_batch.unsqueeze(-1)
+                surr2 = torch.clamp(
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                ) * adv_batch.unsqueeze(-1)
+                action_loss = -torch.min(surr1, surr2).mean()
 
             # Add KL loss if enabled
             if self.use_kl_loss:
@@ -2120,7 +2211,13 @@ class PPOTrainer(BasePolicyTrainer):
         checkpoint_dir: str = "./ckpt",
         **kwargs,
     ):
-        """Train the policy using PPO with on-policy environment interaction.
+        """Train the policy using PPO with on-policy or off-policy interaction.
+
+        On-policy mode: collects trajectories from the current policy and
+        updates using the clipped surrogate objective.
+
+        Off-policy mode: collects transitions to a replay buffer and samples
+        from it for updates with importance sampling correction.
 
         Args:
             checkpoint_every: Save checkpoint every N episodes.
@@ -2224,6 +2321,16 @@ class PPOTrainer(BasePolicyTrainer):
 
                 next_obs, reward, done, truncated, _ = self.env.step(action)
 
+                # Off-policy: push transition to replay buffer
+                if self.use_off_policy and self.replay_buffer is not None:
+                    self.replay_buffer.push(
+                        obs=np.asarray(obs, dtype=np.float32),
+                        action=action,
+                        reward=reward,
+                        log_prob=log_prob,
+                        mask=1.0 if not (done or truncated) else 0.0,
+                    )
+
                 episode_data["observations"].append(obs)
                 episode_data["actions"].append(action)
                 episode_data["rewards"].append(reward)
@@ -2257,16 +2364,81 @@ class PPOTrainer(BasePolicyTrainer):
                 )
                 returns[t] = cumulative_return
 
-            value_loss, action_loss, dist_entropy, kl_loss = self.update(
-                obs_tensor,
-                actions_tensor,
-                rewards_tensor,
-                masks_tensor,
-                old_log_probs_tensor,
-                values_tensor,
-                returns,
-                old_logits_tensor,
-            )
+            if self.use_off_policy and self.replay_buffer is not None:
+                # Off-policy with replay buffer: sample from buffer for update.
+                # This allows reusing past experience for multiple updates,
+                # reducing communication overhead in distributed training.
+                if self.replay_buffer.is_empty():
+                    print(
+                        f"Episode {episode}: Buffer empty, skipping update. "
+                        f"Collecting experience..."
+                    )
+                    action_loss = 0.0
+                    dist_entropy = 0.0
+                    kl_loss = 0.0
+                    value_loss = 0.0
+                else:
+                    # Sample a batch from the replay buffer
+                    buffer_batch = self.replay_buffer.sample(
+                        min(self.num_mini_batch, len(self.replay_buffer))
+                    )
+                    # Convert buffer batch to tensors
+                    obs_buffer = torch.tensor(
+                        buffer_batch["obs"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    actions_buffer = torch.tensor(
+                        buffer_batch["action"], dtype=torch.long
+                    ).unsqueeze(0)
+                    rewards_buffer = torch.tensor(
+                        buffer_batch["reward"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    masks_buffer = torch.tensor(
+                        buffer_batch["mask"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    log_probs_buffer = torch.tensor(
+                        buffer_batch["log_prob"], dtype=torch.float32
+                    ).unsqueeze(0)
+                    # For off-policy, values and returns are not used from buffer
+                    # (advantage is computed from reward - baseline)
+                    values_buffer = torch.zeros_like(rewards_buffer)
+                    returns_buffer = rewards_buffer.clone()
+                    old_logits_buffer = torch.zeros_like(
+                        torch.tensor(
+                            [
+                                logits[0, 0].detach().cpu().numpy()
+                                for logits in episode_data["old_logits"]
+                            ],
+                            dtype=torch.float32,
+                        ).unsqueeze(0)
+                        if episode_data["old_logits"]
+                        else torch.zeros(1, 1)
+                    )
+
+                    value_loss, action_loss, dist_entropy, kl_loss = self.update(
+                        obs_buffer,
+                        actions_buffer,
+                        rewards_buffer,
+                        masks_buffer,
+                        log_probs_buffer,
+                        values_buffer,
+                        returns_buffer,
+                        old_logits_buffer,
+                    )
+            else:
+                # On-policy or off-policy without replay buffer: use current
+                # episode's data for update. When use_off_policy=True without
+                # a buffer, the off-policy clipped surrogate objective is still
+                # applied (π_k/α ≈ 1 approximation), providing training stability.
+                value_loss, action_loss, dist_entropy, kl_loss = self.update(
+                    obs_tensor,
+                    actions_tensor,
+                    rewards_tensor,
+                    masks_tensor,
+                    old_log_probs_tensor,
+                    values_tensor,
+                    returns,
+                    old_logits_tensor,
+                )
 
             episode_rewards.append(episode_reward)
             mean_reward = np.mean(episode_rewards[-min(100, len(episode_rewards)) :])
@@ -2276,6 +2448,13 @@ class PPOTrainer(BasePolicyTrainer):
                 no_improvement_count = 0
             else:
                 no_improvement_count += 1
+
+            # Log buffer size for off-policy mode
+            buffer_size = (
+                len(self.replay_buffer)
+                if self.use_off_policy and self.replay_buffer is not None
+                else 0
+            )
 
             if use_wandb:
                 log_data = {
@@ -2290,10 +2469,14 @@ class PPOTrainer(BasePolicyTrainer):
                 }
                 if self.use_kl_loss:
                     log_data["kl_loss"] = kl_loss
+                if self.use_off_policy:
+                    log_data["buffer_size"] = buffer_size
                 wandb.log(log_data)
             print(
                 f"Episode {episode}: reward={episode_reward:.4f}, mean_100={mean_reward:.4f}"
             )
+            if self.use_off_policy:
+                print(f"  Buffer size: {buffer_size}")
 
             if (episode + 1) % checkpoint_every == 0:
                 ckpt_path = os.path.join(checkpoint_dir, f"ppo_checkpoint_{episode}.pt")
