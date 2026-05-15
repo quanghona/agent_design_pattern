@@ -153,6 +153,7 @@ class TestReinforcePPBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -213,6 +214,7 @@ class TestReinforcePPBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         for name, param in policy.named_parameters():
@@ -268,6 +270,7 @@ class TestReinforcePPBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -979,6 +982,7 @@ class TestGRPOBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1037,6 +1041,7 @@ class TestGRPOBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         for name, param in policy.named_parameters():
@@ -1092,6 +1097,7 @@ class TestGRPOBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1144,6 +1150,7 @@ class TestGRPOBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1195,6 +1202,7 @@ class TestGRPOBasic:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1253,6 +1261,7 @@ class TestGRPOVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1308,6 +1317,7 @@ class TestGRPOVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1361,6 +1371,7 @@ class TestGRPOVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1430,6 +1441,7 @@ class TestGRPOVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -1856,6 +1868,7 @@ class TestGRPOInvalidInputs:
                 batch["rewards"],
                 batch["masks"],
                 batch["old_log_probs"],
+            None,
             )
 
     def test_mismatched_tensor_shapes(self):
@@ -1910,6 +1923,7 @@ class TestGRPOInvalidInputs:
                 batch["rewards"],
                 batch["masks"],
                 batch["old_log_probs"],
+            None,
             )
 
     def test_invalid_action_indices(self):
@@ -1964,6 +1978,7 @@ class TestGRPOInvalidInputs:
                 batch["rewards"],
                 batch["masks"],
                 batch["old_log_probs"],
+            None,
             )
 
     def test_all_masks_zero(self):
@@ -2015,6 +2030,7 @@ class TestGRPOInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         # Should still produce valid loss values even with all masks zero
@@ -2072,6 +2088,7 @@ class TestReinforcePPClipParam:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2126,6 +2143,7 @@ class TestReinforcePPClipParam:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2180,6 +2198,7 @@ class TestReinforcePPClipParam:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2238,6 +2257,7 @@ class TestReinforcePPZeroValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2292,6 +2312,7 @@ class TestReinforcePPZeroValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2345,6 +2366,7 @@ class TestReinforcePPZeroValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2398,6 +2420,7 @@ class TestReinforcePPZeroValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2457,6 +2480,7 @@ class TestReinforcePPRewardNormalization:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2512,6 +2536,7 @@ class TestReinforcePPRewardNormalization:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2571,6 +2596,7 @@ class TestReinforcePPRewardNormalization:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2626,6 +2652,7 @@ class TestReinforcePPRewardNormalization:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2681,6 +2708,7 @@ class TestReinforcePPRewardNormalization:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2733,7 +2761,6 @@ class TestReinforcePPKLLoss:
             "rewards": torch.randn(batch_size, seq_len),
             "masks": torch.ones(batch_size, seq_len),
             "old_log_probs": torch.randn(batch_size, seq_len),
-            "kl_divergence": torch.abs(torch.randn(batch_size, seq_len)),
         }
 
         losses = optimizer.update(
@@ -2742,6 +2769,7 @@ class TestReinforcePPKLLoss:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2797,6 +2825,7 @@ class TestReinforcePPKLLoss:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2854,6 +2883,7 @@ class TestReinforcePPKLLoss:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2912,6 +2942,7 @@ class TestReinforcePPBatchSequenceVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -2966,6 +2997,7 @@ class TestReinforcePPBatchSequenceVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3020,6 +3052,7 @@ class TestReinforcePPBatchSequenceVariations:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3079,6 +3112,7 @@ class TestReinforcePPGradientClipping:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3133,6 +3167,7 @@ class TestReinforcePPGradientClipping:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3192,6 +3227,7 @@ class TestReinforcePPMultiLayer:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3247,6 +3283,7 @@ class TestReinforcePPMultiLayer:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3316,6 +3353,7 @@ class TestReinforcePPEntropy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
         losses_low = optimizer_low_entropy.update(
             batch["obs"],
@@ -3323,6 +3361,7 @@ class TestReinforcePPEntropy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss_high, entropy_high, kl_loss_high = losses_high
@@ -3380,6 +3419,7 @@ class TestReinforcePPEntropy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3438,6 +3478,7 @@ class TestReinforcePPLearningRate:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3492,6 +3533,7 @@ class TestReinforcePPLearningRate:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3550,6 +3592,7 @@ class TestReinforcePPEpochsAndBatches:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3604,6 +3647,7 @@ class TestReinforcePPEpochsAndBatches:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3658,6 +3702,7 @@ class TestReinforcePPEpochsAndBatches:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3712,6 +3757,7 @@ class TestReinforcePPEpochsAndBatches:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3773,6 +3819,7 @@ class TestReinforcePPWithProvidedValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3830,6 +3877,7 @@ class TestReinforcePPWithProvidedValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3887,6 +3935,7 @@ class TestReinforcePPWithProvidedValues:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -3943,6 +3992,7 @@ class TestReinforcePPNoOldLogProbs:
             batch["actions"],
             batch["rewards"],
             batch["masks"],
+            None,
             None,
         )
 
@@ -4002,6 +4052,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4056,6 +4107,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4110,6 +4162,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4164,6 +4217,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4219,6 +4273,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4273,6 +4328,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4328,6 +4384,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4383,6 +4440,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4431,7 +4489,6 @@ class TestReinforcePPInvalidInputs:
             "rewards": torch.randn(batch_size, seq_len),
             "masks": torch.ones(batch_size, seq_len),
             "old_log_probs": torch.randn(batch_size, seq_len),
-            "kl_divergence": torch.abs(torch.randn(batch_size, seq_len)),
         }
 
         losses = optimizer.update(
@@ -4440,7 +4497,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
-            batch["kl_divergence"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4494,6 +4551,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4548,6 +4606,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4602,6 +4661,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4656,6 +4716,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4710,6 +4771,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4764,6 +4826,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4818,6 +4881,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4872,6 +4936,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4926,6 +4991,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -4980,6 +5046,7 @@ class TestReinforcePPInvalidInputs:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -5038,6 +5105,7 @@ class TestReinforcePPObservationOptional:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -5316,6 +5384,7 @@ class TestGPT2PolicyReinforcePP:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -5376,6 +5445,7 @@ class TestGPT2PolicyReinforcePP:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         # At least some parameters should have changed
@@ -5439,6 +5509,7 @@ class TestGPT2PolicyReinforcePP:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -5492,7 +5563,6 @@ class TestGPT2PolicyReinforcePP:
             "rewards": torch.randn(batch_size, seq_len),
             "masks": torch.ones(batch_size, seq_len),
             "old_log_probs": torch.randn(batch_size, seq_len),
-            "kl_divergence": torch.abs(torch.randn(batch_size, seq_len)),
         }
 
         losses = optimizer.update(
@@ -5501,7 +5571,7 @@ class TestGPT2PolicyReinforcePP:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
-            batch["kl_divergence"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -5558,6 +5628,7 @@ class TestGPT2PolicyReinforcePP:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         action_loss, entropy, kl_loss = losses
@@ -6348,6 +6419,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -6417,6 +6489,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -6490,6 +6563,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         for name, param in policy.named_parameters():
@@ -6552,6 +6626,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -6621,6 +6696,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -6693,6 +6769,7 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
@@ -6803,7 +6880,373 @@ class TestGRPOOffPolicy:
             batch["rewards"],
             batch["masks"],
             batch["old_log_probs"],
+            None,
         )
 
         assert not torch.isnan(torch.tensor(action_loss))
         assert not torch.isnan(torch.tensor(entropy))
+
+
+
+class TestPPOOffPolicy:
+    """Test off-policy PPO functionality."""
+
+    def test_off_policy_works_without_replay_buffer(self):
+        """Test that off-policy PPO works without a replay buffer."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+
+        # Off-policy should work without replay buffer
+        ppo = PPOTrainer(
+            policy,
+            env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            num_mini_batch=2,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            use_off_policy=True,
+            # No replay_buffer provided
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size,)),
+            "rewards": torch.randn(batch_size),
+            "masks": torch.ones(batch_size),
+            "old_log_probs": torch.randn(batch_size),
+            "values": torch.zeros(batch_size),
+            "returns": torch.randn(batch_size),
+        }
+
+        value_loss, action_loss, dist_entropy, kl_loss = ppo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+            batch["values"],
+            batch["returns"],
+            torch.zeros_like(batch["obs"]),
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(dist_entropy))
+        assert not torch.isnan(torch.tensor(value_loss))
+        assert kl_loss == 0.0
+
+    def test_off_policy_with_replay_buffer(self):
+        """Test basic off-policy update with replay buffer."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with some experience
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=0.5,
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        ppo = PPOTrainer(
+            policy,
+            env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            num_mini_batch=2,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size,)),
+            "rewards": torch.randn(batch_size),
+            "masks": torch.ones(batch_size),
+            "old_log_probs": torch.randn(batch_size),
+            "values": torch.zeros(batch_size),
+            "returns": torch.randn(batch_size),
+        }
+
+        value_loss, action_loss, dist_entropy, kl_loss = ppo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+            batch["values"],
+            batch["returns"],
+            torch.zeros_like(batch["obs"]),
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(dist_entropy))
+        assert not torch.isnan(torch.tensor(value_loss))
+        assert kl_loss == 0.0
+
+    def test_off_policy_parameters_updated(self):
+        """Test that off-policy update actually updates model parameters."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with some experience
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=0.5,
+                log_prob=-0.1,
+                mask=1.0,
+            )
+
+        ppo = PPOTrainer(
+            policy,
+            env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            num_mini_batch=2,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+        )
+
+        initial_params = {
+            name: param.clone() for name, param in policy.named_parameters()
+        }
+
+        batch = {
+            "obs": torch.randn(batch_size, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size,)),
+            "rewards": torch.randn(batch_size),
+            "masks": torch.ones(batch_size),
+            "old_log_probs": torch.randn(batch_size),
+            "values": torch.zeros(batch_size),
+            "returns": torch.randn(batch_size),
+        }
+
+        ppo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+            batch["values"],
+            batch["returns"],
+            torch.zeros_like(batch["obs"]),
+        )
+
+        # Check that parameters have changed
+        params_changed = False
+        for name, param in policy.named_parameters():
+            if not torch.equal(initial_params[name], param):
+                params_changed = True
+                break
+        assert params_changed, "Policy parameters were not updated after off-policy training"
+
+    def test_tis_cap_bounds_importance_sampling(self):
+        """Test that TIS cap correctly bounds the importance sampling ratio."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+        replay_buffer = SimpleReplayBuffer(capacity=1000)
+
+        # Fill buffer with experience that will create large IS ratios
+        for _ in range(32):
+            replay_buffer.push(
+                obs=np.zeros(obs_dim, dtype=np.float32),
+                action=0,
+                reward=0.5,
+                log_prob=-5.0,  # Very different log prob to create large ratio
+                mask=1.0,
+            )
+
+        # Use a small tis_cap to test bounding
+        tis_cap_value = 1.5
+        ppo = PPOTrainer(
+            policy,
+            env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            num_mini_batch=2,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            use_off_policy=True,
+            replay_buffer=replay_buffer,
+            tis_cap=tis_cap_value,
+        )
+
+        # Create batch with very different log probs to test TIS cap
+        batch = {
+            "obs": torch.randn(batch_size, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size,)),
+            "rewards": torch.randn(batch_size),
+            "masks": torch.ones(batch_size),
+            "old_log_probs": torch.randn(batch_size) * 10,  # Large variance
+            "values": torch.zeros(batch_size),
+            "returns": torch.randn(batch_size),
+        }
+
+        # Should not crash or produce NaN
+        value_loss, action_loss, dist_entropy, kl_loss = ppo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+            batch["values"],
+            batch["returns"],
+            torch.zeros_like(batch["obs"]),
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(dist_entropy))
+        assert not torch.isnan(torch.tensor(value_loss))
+
+    def test_on_policy_still_works(self):
+        """Test that on-policy PPO (default) still works correctly."""
+        obs_dim = 10
+        action_dim = 5
+        batch_size = 8
+
+        policy = SimplePolicy(
+            action_space=spaces.Discrete(action_dim),
+            observation_space=spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            ),
+        )
+        env = PromptOptimizationEnv(
+            initial_prompt="test",
+            augmenters=[IdentityPromptAugmenter()],
+            embedding_model=lambda x: np.zeros(obs_dim, dtype=np.float32),
+            reward_model=lambda x: 0.0,
+            max_steps=10,
+        )
+        torch_optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            torch_optimizer, step_size=100, gamma=0.9
+        )
+
+        # On-policy should work without replay buffer
+        ppo = PPOTrainer(
+            policy,
+            env,
+            max_episodes=100,
+            optimizer=torch_optimizer,
+            lr_scheduler=lr_scheduler,
+            num_mini_batch=2,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            use_off_policy=False,  # Explicitly on-policy
+        )
+
+        batch = {
+            "obs": torch.randn(batch_size, obs_dim),
+            "actions": torch.randint(0, action_dim, (batch_size,)),
+            "rewards": torch.randn(batch_size),
+            "masks": torch.ones(batch_size),
+            "old_log_probs": torch.randn(batch_size),
+            "values": torch.zeros(batch_size),
+            "returns": torch.randn(batch_size),
+        }
+
+        value_loss, action_loss, dist_entropy, kl_loss = ppo.update(
+            batch["obs"],
+            batch["actions"],
+            batch["rewards"],
+            batch["masks"],
+            batch["old_log_probs"],
+            batch["values"],
+            batch["returns"],
+            torch.zeros_like(batch["obs"]),
+        )
+
+        assert not torch.isnan(torch.tensor(action_loss))
+        assert not torch.isnan(torch.tensor(dist_entropy))
+        assert not torch.isnan(torch.tensor(value_loss))
+        assert kl_loss == 0.0
