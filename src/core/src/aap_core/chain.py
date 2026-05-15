@@ -25,6 +25,10 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
         default=False, description="store intermediate steps output"
     )
 
+    max_turns: int = Field(
+        default=50, description="maximum number of turns before stopping"
+    )
+
     def final_response_as_context(self, key: str) -> None:
         self._last_response_as_context = key.replace("context_", "")
 
@@ -53,12 +57,6 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
         pass
 
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
-        # Template method
-        conversation = self._prepare_conversation(message)
-        conversation, response, has_tool, usage = self._generate_response(
-            conversation, **kwargs
-        )
-
         if message.token_usage is None:
             message.token_usage = {
                 "steps": [],
@@ -77,11 +75,20 @@ class BaseCausalMultiTurnsChain(BaseLLMChain, Generic[ChainMessage, ChainRespons
             message.token_usage["total"]["output_tokens"] += usage["output_tokens"]  # type: ignore
             message.token_usage["total"]["total_tokens"] += usage["total_tokens"]  # type: ignore
 
-        add_token(usage)
-        if has_tool:
-            conversation = self._process_tools(conversation, response)
-            conversation, _, _, usage = self._generate_response(conversation, **kwargs)
+        # Template method — ReAct loop: Thought → Act → Thought → ... → Final
+        conversation = self._prepare_conversation(message)
+        turn = 0
+        while turn < self.max_turns:
+            conversation, response, has_tool, usage = self._generate_response(
+                conversation, **kwargs
+            )
             add_token(usage)
+
+            if not has_tool:
+                break
+
+            conversation = self._process_tools(conversation, response)
+            turn += 1
 
         message = self._append_responses(message, conversation)
 
