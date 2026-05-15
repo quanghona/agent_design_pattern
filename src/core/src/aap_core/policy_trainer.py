@@ -802,6 +802,45 @@ class BasePolicyTrainer(ABC):
     def fit(self, **kwargs):
         pass
 
+    @classmethod
+    def _compute_kl_loss(
+        cls,
+        old_logits: torch.Tensor,
+        batch_indices: slice,
+        logits: torch.Tensor,
+        action_loss: torch.Tensor,
+        kl_coef: float,
+        kl_loss_epoch: float,
+    ) -> Tuple[torch.Tensor, float]:
+        """Compute KL divergence loss between old and current policy.
+
+        KL(π_old || π_new) = Σ π_old(a|s) * (log π_old(a|s) - log π_new(a|s))
+
+        Args:
+            old_logits: Previous policy logits for all samples.
+            batch_indices: Slice of indices for the current mini-batch.
+            logits: Current policy logits from forward pass.
+            action_loss: Current action loss tensor.
+            kl_coef: Coefficient for KL loss term.
+            kl_loss_epoch: Running KL loss accumulator.
+
+        Returns:
+            Tuple of (updated action_loss, updated kl_loss_epoch).
+        """
+        old_logits_batch = old_logits[batch_indices]
+        current_logits = logits.squeeze(1)
+        old_probs = F.softmax(old_logits_batch, dim=-1)
+        current_log_probs = F.log_softmax(current_logits, dim=-1)
+        kl_divergence = F.kl_div(
+            current_log_probs,
+            old_probs,
+            reduction="none",
+        ).sum(dim=-1)
+        kl_loss = kl_divergence.mean()
+        action_loss = action_loss + kl_coef * kl_loss
+        kl_loss_epoch += kl_loss.item()
+        return action_loss, kl_loss_epoch
+
 
 class ReinforcePPTrainer(BasePolicyTrainer):
     """
@@ -969,7 +1008,7 @@ class ReinforcePPTrainer(BasePolicyTrainer):
         rewards,
         masks,
         old_log_probs,
-        kl_divergence=None,
+        old_logits: Optional[torch.Tensor] = None,
     ):
         """
         Perform one update step of REINFORCE++.
@@ -980,9 +1019,8 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             rewards: Rewards received
             masks: Binary masks for valid positions
             old_log_probs: Previous log probabilities
-            returns: Cumulative returns (optional, computed if not provided)
-            advantages: Advantages (optional, computed if not provided)
-            kl_divergence: KL divergence from reference policy (optional)
+            old_logits: Previous logits for KL loss computation (optional,
+                not available when sampling from replay buffer)
 
         Returns:
             Tuple with loss values
@@ -1016,8 +1054,10 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             advantages_batch = advantages[batch_indices]
 
             # Forward pass
-            _, action_log_probs, dist_entropy, _ = self.policy_model.evaluate_actions(
-                obs_batch, actions_batch, masks_batch
+            _, action_log_probs, dist_entropy, logits = (
+                self.policy_model.evaluate_actions(
+                    obs_batch, actions_batch, masks_batch
+                )
             )
 
             # Compute policy loss with PPO-style clipping
@@ -1037,10 +1077,15 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             action_loss = action_loss - self.entropy_coef * dist_entropy.mean()
 
             # Add KL loss if enabled
-            if self.use_kl_loss and kl_divergence is not None:
-                kl_loss = kl_divergence[batch_indices].mean()
-                action_loss = action_loss + self.kl_coef * kl_loss
-                kl_loss_epoch += kl_loss.item()
+            if self.use_kl_loss and old_logits is not None:
+                action_loss, kl_loss_epoch = BasePolicyTrainer._compute_kl_loss(
+                    old_logits,
+                    slice(i, i + self.num_mini_batch),
+                    logits,
+                    action_loss,
+                    self.kl_coef,
+                    kl_loss_epoch,
+                )
 
             # Backward pass
             self.optimizer.zero_grad()
@@ -1146,6 +1191,7 @@ class ReinforcePPTrainer(BasePolicyTrainer):
                 "rewards": [],
                 "masks": [],
                 "log_probs": [],
+                "old_logits": [],
             }
 
             # Collect trajectory
@@ -1163,6 +1209,8 @@ class ReinforcePPTrainer(BasePolicyTrainer):
                 # Get action from policy with exploration
                 with torch.no_grad():
                     logits = self.policy_model(obs_tensor)
+                    # Store logits for KL divergence computation
+                    episode_data["old_logits"].append(logits[0, 0].detach())
                     # Determine whether to explore or exploit
                     should_explore = self.exploration_module.should_explore(
                         step=step_count, episode=episode
@@ -1196,6 +1244,7 @@ class ReinforcePPTrainer(BasePolicyTrainer):
             old_log_probs_tensor = torch.tensor(
                 episode_data["log_probs"], dtype=torch.float32
             )
+            old_logits_tensor = torch.stack(episode_data["old_logits"], dim=0)
 
             # Update policy
             action_loss, dist_entropy, kl_loss = self.update(
@@ -1204,6 +1253,7 @@ class ReinforcePPTrainer(BasePolicyTrainer):
                 rewards_tensor.unsqueeze(0),
                 masks_tensor.unsqueeze(0),
                 old_log_probs_tensor.unsqueeze(0),
+                old_logits_tensor,
             )
 
             # Track metrics
@@ -1434,8 +1484,22 @@ class GRPOTrainer(BasePolicyTrainer):
         rewards,
         masks,
         old_log_probs,
-        kl_divergence=None,
+        old_logits: Optional[torch.Tensor] = None,
     ):
+        """Perform one update step of GRPO.
+
+        Args:
+            obs: Observations
+            actions: Actions taken
+            rewards: Rewards received
+            masks: Binary masks for valid positions
+            old_log_probs: Previous log probabilities
+            old_logits: Previous logits for KL loss computation (optional,
+                not available when sampling from replay buffer)
+
+        Returns:
+            Tuple of (action_loss, dist_entropy, kl_loss)
+        """
         returns = self._compute_returns(rewards, masks)
         advantages = self._compute_group_advantages(returns)
 
@@ -1461,8 +1525,10 @@ class GRPOTrainer(BasePolicyTrainer):
             )
             advantages_batch = advantages[batch_indices]
 
-            _, action_log_probs, dist_entropy, _ = self.policy_model.evaluate_actions(
-                obs_batch, actions_batch, masks_batch
+            _, action_log_probs, dist_entropy, logits = (
+                self.policy_model.evaluate_actions(
+                    obs_batch, actions_batch, masks_batch
+                )
             )
 
             if self.use_off_policy:
@@ -1513,10 +1579,16 @@ class GRPOTrainer(BasePolicyTrainer):
 
             action_loss = action_loss - self.entropy_coef * dist_entropy.mean()
 
-            if self.use_kl_loss and kl_divergence is not None:
-                kl_loss = kl_divergence[batch_indices].mean()
-                action_loss = action_loss + self.kl_coef * kl_loss
-                kl_loss_epoch += kl_loss.item()
+            # Add KL loss if enabled
+            if self.use_kl_loss and old_logits is not None:
+                action_loss, kl_loss_epoch = BasePolicyTrainer._compute_kl_loss(
+                    old_logits,
+                    slice(i, i + self.num_mini_batch),
+                    logits,
+                    action_loss,
+                    self.kl_coef,
+                    kl_loss_epoch,
+                )
 
             self.optimizer.zero_grad()
             action_loss.backward()
@@ -1601,6 +1673,7 @@ class GRPOTrainer(BasePolicyTrainer):
                 "rewards": [],
                 "masks": [],
                 "log_probs": [],
+                "old_logits": [],
             }
 
             done = False
@@ -1613,6 +1686,8 @@ class GRPOTrainer(BasePolicyTrainer):
                 )
                 with torch.no_grad():
                     logits = self.policy_model(obs_tensor)
+                    # Store logits for KL divergence computation
+                    episode_data["old_logits"].append(logits[0, 0].detach())
                     # Determine whether to explore or exploit
                     should_explore = self.exploration_module.should_explore(
                         step=step_count, episode=episode
@@ -1661,6 +1736,7 @@ class GRPOTrainer(BasePolicyTrainer):
             old_log_probs_tensor = torch.tensor(
                 episode_data["log_probs"], dtype=torch.float32
             )
+            old_logits_tensor = torch.stack(episode_data["old_logits"], dim=0)
 
             if self.use_off_policy and self.replay_buffer is not None:
                 # Off-policy with replay buffer: sample from buffer for update.
@@ -1719,6 +1795,7 @@ class GRPOTrainer(BasePolicyTrainer):
                     rewards_tensor.unsqueeze(0),
                     masks_tensor.unsqueeze(0),
                     old_log_probs_tensor.unsqueeze(0),
+                    old_logits_tensor,
                 )
 
             episode_rewards.append(episode_reward)
@@ -1986,18 +2063,16 @@ class PPOTrainer(BasePolicyTrainer):
             action_loss = -torch.min(surr1, surr2).mean()
             kl_loss = torch.tensor(0.0, device=logits.device)
 
+            # Add KL loss if enabled
             if self.use_kl_loss:
-                old_logits_batch = old_logits[batch_indices]
-                current_logits = logits.squeeze(1)
-                old_probs = F.softmax(old_logits_batch, dim=-1)
-                current_log_probs = F.log_softmax(current_logits, dim=-1)
-                kl_divergence = F.kl_div(
-                    current_log_probs,
-                    old_probs,
-                    reduction="none",
-                ).sum(dim=-1)
-                kl_loss = kl_divergence.mean()
-                action_loss = action_loss + self.kl_coef * kl_loss
+                action_loss, kl_loss_epoch = BasePolicyTrainer._compute_kl_loss(
+                    old_logits,
+                    slice(i, i + self.num_mini_batch),
+                    logits,
+                    action_loss,
+                    self.kl_coef,
+                    kl_loss_epoch,
+                )
 
             if self.use_clipped_value_loss:
                 value_pred_clipped = values_batch + (values_pred - values_batch).clamp(
@@ -2026,8 +2101,6 @@ class PPOTrainer(BasePolicyTrainer):
             value_loss_epoch += value_loss.item()
             action_loss_epoch += action_loss.item()
             dist_entropy_epoch += dist_entropy.mean().item()
-            if self.use_kl_loss:
-                kl_loss_epoch += kl_loss.item()
             num_updates += 1
 
         return (
@@ -2761,7 +2834,6 @@ class DPOTrainer(BasePolicyTrainer):
                 preferred_masks_list = [1.0] * len(preferred_prompts)
                 rejected_masks_list = [1.0] * len(rejected_prompts)
 
-            batch_size = len(preferred_prompts)
             preferred_obs = torch.tensor(
                 np.stack(preferred_obs_list, axis=0), dtype=torch.float32
             )
