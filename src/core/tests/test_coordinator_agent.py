@@ -1,18 +1,10 @@
 """Tests for CoordinatorAgent in aap_core.orchestration."""
 
-from unittest.mock import MagicMock
-
 import pytest
-
 from a2a.types import AgentCard
 from aap_core.agent import BaseAgent
 from aap_core.orchestration import CoordinatorAgent
 from aap_core.types import AgentMessage, BaseLLMChain
-
-
-# ---------------------------------------------------------------------------
-# Fixtures & Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_agent_card(name: str = "test_agent") -> AgentCard:
@@ -139,9 +131,6 @@ def parse_plan():
     return _make_parse_plan()
 
 
-# --- Tests: Construction & Validation ---
-
-
 class TestCoordinatorAgentConstruction:
     """Test CoordinatorAgent construction and field validation."""
 
@@ -208,9 +197,6 @@ class TestCoordinatorAgentConstruction:
             )
 
 
-# --- Tests: Execute - Planning Stage ---
-
-
 class TestCoordinatorAgentPlanning:
     """Test the planning stage of CoordinatorAgent.execute()."""
 
@@ -249,9 +235,6 @@ class TestCoordinatorAgentPlanning:
         assert "worker" in agent.state
         # Planner should have been called once
         assert planner.call_count == 1
-
-
-# --- Tests: Execute - Step Execution ---
 
 
 class TestCoordinatorAgentExecution:
@@ -339,9 +322,6 @@ class TestCoordinatorAgentExecution:
         assert "results" in last_call.context
 
 
-# --- Tests: Execute - Summary Stage ---
-
-
 class TestCoordinatorAgentSummary:
     """Test the summary stage of CoordinatorAgent.execute()."""
 
@@ -417,9 +397,6 @@ class TestCoordinatorAgentSummary:
         message = AgentMessage(query="test query")
         agent.execute(message)
         assert agent.state == "idle"
-
-
-# --- Tests: Execute - Edge Cases ---
 
 
 class TestCoordinatorAgentEdgeCases:

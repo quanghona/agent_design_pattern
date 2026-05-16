@@ -8,11 +8,6 @@ from aap_core.orchestration import VotingAgent
 from aap_core.types import AgentMessage
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def agent_card(name: str = "test_agent") -> AgentCard:
     return AgentCard(
@@ -114,11 +109,6 @@ def _make_voting_agent(
     return VotingAgent(**kwargs)
 
 
-# ---------------------------------------------------------------------------
-# majority_vote — bleu / agent_forest
-# ---------------------------------------------------------------------------
-
-
 class TestVotingAgentMajorityVoteBleu:
     """Tests for majority_vote with bleu/agent_forest scorer."""
 
@@ -198,11 +188,6 @@ class TestVotingAgentMajorityVoteBleu:
         assert result.responses[-1][0] == voting_agent.card.name
 
 
-# ---------------------------------------------------------------------------
-# majority_vote — rouge
-# ---------------------------------------------------------------------------
-
-
 class TestVotingAgentMajorityVoteRouge:
     """Tests for majority_vote with rouge scorers."""
 
@@ -249,14 +234,9 @@ class TestVotingAgentMajorityVoteRouge:
             ("agent_a", "The quick brown fox"),
             ("agent_b", "A quick brown fox"),
         ]
-        # The rouge scorer returns a Score object that can't be added with +=
-        with pytest.raises(TypeError):
-            voting_agent.execute(message)
-
-
-# ---------------------------------------------------------------------------
-# majority_vote — error cases
-# ---------------------------------------------------------------------------
+        result = voting_agent.execute(message)
+        assert result.execution_result == "success"
+        assert result.responses[-1][0] == voting_agent.card.name
 
 
 class TestVotingAgentMajorityVoteErrors:
@@ -279,11 +259,6 @@ class TestVotingAgentMajorityVoteErrors:
         message.responses = [("agent_a", "response")]
         with pytest.raises(TypeError, match="scorer need to be one of"):
             voting_agent.execute(message)
-
-
-# ---------------------------------------------------------------------------
-# llm_score
-# ---------------------------------------------------------------------------
 
 
 class TestVotingAgentLLMScore:
@@ -411,11 +386,6 @@ class TestVotingAgentLLMScore:
         assert result.responses[-1][1] == "3"
 
 
-# ---------------------------------------------------------------------------
-# Invalid voting_method
-# ---------------------------------------------------------------------------
-
-
 class TestVotingAgentInvalidMethod:
     """Tests for invalid voting_method."""
 
@@ -432,11 +402,6 @@ class TestVotingAgentInvalidMethod:
                 voting_method="invalid_method",  # type: ignore
                 scorer="bleu",
             )
-
-
-# ---------------------------------------------------------------------------
-# State transitions and composed state
-# ---------------------------------------------------------------------------
 
 
 class TestVotingAgentState:
@@ -475,11 +440,6 @@ class TestVotingAgentState:
         # the final state is idle
         voting_agent.execute(message)
         assert voting_agent.state == "idle"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestVotingAgentEdgeCases:
