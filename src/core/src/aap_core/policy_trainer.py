@@ -1003,11 +1003,11 @@ class ReinforcePPTrainer(BasePolicyTrainer):
 
     def update(
         self,
-        obs,
-        actions,
-        rewards,
-        masks,
-        old_log_probs,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        masks: torch.Tensor,
+        old_log_probs: torch.Tensor,
         old_logits: Optional[torch.Tensor] = None,
     ):
         """
@@ -1479,11 +1479,11 @@ class GRPOTrainer(BasePolicyTrainer):
 
     def update(
         self,
-        obs,
-        actions,
-        rewards,
-        masks,
-        old_log_probs,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        masks: torch.Tensor,
+        old_log_probs: torch.Tensor,
         old_logits: Optional[torch.Tensor] = None,
     ):
         """Perform one update step of GRPO.
@@ -2071,14 +2071,14 @@ class PPOTrainer(BasePolicyTrainer):
 
     def update(
         self,
-        obs,
-        actions,
-        rewards,
-        masks,
-        old_log_probs,
-        values,
-        returns,
-        old_logits,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        masks: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        values: torch.Tensor,
+        returns: torch.Tensor,
+        old_logits: torch.Tensor,
     ) -> Tuple[float, float, float, float]:
         """Perform one update step of PPO.
 
@@ -2768,12 +2768,12 @@ class DPOTrainer(BasePolicyTrainer):
 
     def update(
         self,
-        preferred_obs,
-        rejected_obs,
-        preferred_actions,
-        rejected_actions,
-        preferred_masks,
-        rejected_masks,
+        preferred_obs: torch.Tensor,
+        rejected_obs: torch.Tensor,
+        preferred_actions: torch.Tensor,
+        rejected_actions: torch.Tensor,
+        preferred_masks: torch.Tensor,
+        rejected_masks: torch.Tensor,
     ) -> Tuple[float, float]:
         """Perform one update step using DPO loss.
 
