@@ -11,6 +11,11 @@ from aap_core.types import AgentMessage, BaseChain
 
 
 class BaseRetriever(BaseChain):
+    """Base class for retriever.
+    A retriever is responsible for retrieving data from a source and adding it to the message context.
+    The retriever can be used to retrieve data from a database, a file, an API, etc.
+    The retrieved data will be added to the message context and can be used by the agent"""
+
     post_process: BaseChain | None = Field(
         default=None, description="The post process function if any"
     )
