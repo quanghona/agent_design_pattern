@@ -1,6 +1,6 @@
 [project]
 name = "aap_langchain"
-version = "0.1.2.dev1"
+version = "0.2.0"
 description = "Langchain integration of agent design pattern"
 readme = "README.md"
 authors = [

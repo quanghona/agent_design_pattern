@@ -1,6 +1,6 @@
 [project]
 name = "aap_dspy"
-version = "0.1.2.dev1"
+version = "0.2.0"
 description = "DsPy integration of agent design pattern"
 readme = "README.md"
 license = { text = "MIT" }
