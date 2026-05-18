@@ -36,13 +36,11 @@ dev = [
     "langchain-ollama>=1.0.0",
     "ipykernel",
     "langchain-weaviate>=0.0.6",
-    "torch",
     "faiss-cpu>=1.13.2",
     "langchain-community>=0.4.1",
     "langchain-huggingface>=1.2.0",
     "sentence-transformers>=5.2.0",
     "pytest>=9.0.3",
-    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]
