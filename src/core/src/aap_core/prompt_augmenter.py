@@ -19,7 +19,12 @@ class BasePromptAugmenter(BaseChain):
     """A base class to enhance / rewrite the prompt.
 
     There are two types of prompt augmenter:
-    - Data augmenter: Give more context to the prompt by adding external data, either by using files (CSV, JSON, Markdown, etc.), database (SQL,...) or more advanced techniques like RAG, web search.
+    - Data augmenter: Give more context to the prompt by adding external data
+        + files (CSV, JSON, Markdown, etc.)
+        + database (SQL,...)
+        + RAG
+        + web search
+    Common alternative is Retriever
     - Structure augmenter: Rewrite / refine the prompt partially or entirely.
     """
 
@@ -118,8 +123,8 @@ class MetaPromptAugmenter(BasePromptAugmenter):
         return message
 
 
-DataSet = Sequence[Tuple[str, str]]  # A dataset is a sequence of input-output pairs
-PerformanceTuple = Tuple[
+SEEDataSet = Sequence[Tuple[str, str]]  # A dataset is a sequence of input-output pairs
+SEEPerformanceTuple = Tuple[
     Sequence[float], float
 ]  # A performance tuple contains a performance vector and a performance score
 
@@ -162,10 +167,10 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     Following our framework, in the prompt template, the keyword need to be prefix with 'context.' and the additional
     data need to store in 'context' field of the AgentMessage object
 
-    The custom scorer signature when initalization is Callable[[BaseLLMChain, str, Sequence[str], Sequence[PerformanceTuple], DataSet, ...], PerformanceTuple | None]
+    The custom scorer signature when initalization is Callable[[BaseLLMChain, str, Sequence[str], Sequence[SEEPerformanceTuple], SEEDataSet, ...], SEEPerformanceTuple | None]
     """
 
-    _scorer: Callable[..., PerformanceTuple | None] = PrivateAttr()
+    _scorer: Callable[..., SEEPerformanceTuple | None] = PrivateAttr()
     _dist_func: Callable[[Sequence[float], Sequence[float]], float] = PrivateAttr()
     _scorer_args: Dict = PrivateAttr()
     _eval_method: Callable[[str, str], bool] = PrivateAttr()
@@ -192,12 +197,12 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         ..., description="The LLM chain to use for Semantic operator"
     )
 
-    dev_set: DataSet = Field(
+    dev_set: SEEDataSet = Field(
         ...,
         description="The dataset for evaluate prompt. This is D_dev in the algorithm",
         min_length=1,
     )
-    init_data: DataSet | str = Field(
+    init_data: SEEDataSet | str = Field(
         ...,
         description="""The initial data for phase 0. There are two types of initialzation:
         - See-io-pair: provide a set of input-output pairs. SEE apply Lamarckian to generate prompts
@@ -322,7 +327,8 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     def __init__(
         self,
-        scorer: Literal["hamming"] | Callable[..., PerformanceTuple | None] = "hamming",
+        scorer: Literal["hamming"]
+        | Callable[..., SEEPerformanceTuple | None] = "hamming",
         dist_func: Callable[[Sequence[float], Sequence[float]], float] | None = None,
         scorer_args: Dict = {},
         eval_method: Literal["exact", "include"] | Callable[[str, str], bool] = "exact",
@@ -360,8 +366,8 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     def score(
         self,
         prompt: str,
-        dataset: DataSet,
-    ) -> PerformanceTuple:
+        dataset: SEEDataSet,
+    ) -> SEEPerformanceTuple:
         performance_vector = []
         for data in dataset:
             query = f"""{prompt}
@@ -383,10 +389,10 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         chain: BaseLLMChain,
         prompt: str,
         pool: Sequence[str],
-        performance_pool: Sequence[PerformanceTuple],
-        dataset: DataSet,
+        performance_pool: Sequence[SEEPerformanceTuple],
+        dataset: SEEDataSet,
         distance_threshold: int = 2,
-    ) -> PerformanceTuple | None:
+    ) -> SEEPerformanceTuple | None:
         perf_vec, score = self.score(prompt, dataset)
         # If pool is empty (first iteration), accept the candidate
         if len(performance_pool) == 0:
@@ -401,9 +407,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     @classmethod
     def _sort_pool(
-        cls, P_t: list[str], S_t: list[PerformanceTuple], pool_size: int
-    ) -> Tuple[List[str], List[PerformanceTuple]]:
-        # S_t elements are PerformanceTuple = (performance_vector, score)
+        cls, P_t: list[str], S_t: list[SEEPerformanceTuple], pool_size: int
+    ) -> Tuple[List[str], List[SEEPerformanceTuple]]:
+        # S_t elements are SEEPerformanceTuple = (performance_vector, score)
         # Sort by score (index 1) in descending order
         sorted_indices = np.argsort([s[1] for s in S_t])[::-1]
         P_t = [P_t[i] for i in sorted_indices]
@@ -412,13 +418,13 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     @classmethod
     def _selection_random(
-        cls, num_parents: int, S: Sequence[PerformanceTuple]
+        cls, num_parents: int, S: Sequence[SEEPerformanceTuple]
     ) -> List[int]:
         return list(np.random.choice(len(S), num_parents, replace=False))
 
     @classmethod
     def _selection_wheel(
-        cls, num_parents: int, S: Sequence[PerformanceTuple]
+        cls, num_parents: int, S: Sequence[SEEPerformanceTuple]
     ) -> List[int]:
         total_score = sum([s[1] for s in S])
         probabilities = [s[1] / total_score for s in S]
@@ -439,7 +445,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     @classmethod
     def _selection_tournament(
-        cls, num_parents: int, S: Sequence[PerformanceTuple]
+        cls, num_parents: int, S: Sequence[SEEPerformanceTuple]
     ) -> List[int]:
         parents = []
         while len(parents) < num_parents:
@@ -451,14 +457,14 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return parents
 
     # TODO: extend algorithm to multimodal data
-    def lamarckian(self, pairs: DataSet, **kwargs) -> str:
+    def lamarckian(self, pairs: SEEDataSet, **kwargs) -> str:
         """
         Generate new prompt using Lamarckian operator
         This method works with corresponding lamarckian_message and lamarckian_chain attributes.
         In the prompt in lamarckian_message, it must contains key 'context.pairs' to fetch data from provided dataset.
 
         Args:
-            pairs (DataSet): input-output pairs of the data
+            pairs (SEEDataSet): input-output pairs of the data
             **kwargs: arguments for lamarckian chain
 
         Returns:
@@ -469,14 +475,10 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         )
         if self.lamarckian_message is None:
             # The default prompt in the paper
+            with open("default_prompts/see_default_lamarckian.md", "r") as f:
+                default_lamarckian_prompt = f.read()
             message = AgentMessage(
-                query="""I gave a friend an instruction and some input. The friend read the instruction and wrote an output for every one of the inputs. Here are the input-output pairs:
-
-## Example ##
-{context.pairs}
-
-The instruction was:
-""",
+                query=default_lamarckian_prompt,
                 context={"pairs": dataset},
             )
         else:
@@ -489,7 +491,7 @@ The instruction was:
         return msg.responses[-1][1]
 
     def eda(
-        self, candidates: Sequence[str], S: Sequence[PerformanceTuple], **kwargs
+        self, candidates: Sequence[str], S: Sequence[SEEPerformanceTuple], **kwargs
     ) -> str:
         """
         Generate new prompt using EDA operator
@@ -522,14 +524,10 @@ The instruction was:
         parents = [candidates[i] for i in list(map(int, indices))]
         cand_str = "\n\n".join(parents)
         if self.eda_message is None:
+            with open("default_prompts/see_default_eda.md", "r") as f:
+                default_eda_prompt = f.read()
             message = AgentMessage(
-                query="""You are a mutator. Given a series of prompts, your task is to generate another prompt
-with the same semantic meaning and intentions.
-
-## Existing Prompts ##
-{context.candidates}
-
-The newly mutated prompt is:""",
+                query=default_eda_prompt,
                 context={"candidates": cand_str},
             )
         else:
@@ -544,7 +542,7 @@ The newly mutated prompt is:""",
     @classmethod
     def max_vector_distance_subarray(
         cls,
-        S: Sequence[PerformanceTuple],
+        S: Sequence[SEEPerformanceTuple],
         k: int,
         dist_func: Callable[[Sequence[float], Sequence[float]], float],
         selection_method: Literal["tournament", "wheel", "random"] = "random",
@@ -584,7 +582,7 @@ The newly mutated prompt is:""",
         return selected_indices
 
     def crossover(
-        self, P: Sequence[str], S: Sequence[PerformanceTuple], **kwargs
+        self, P: Sequence[str], S: Sequence[SEEPerformanceTuple], **kwargs
     ) -> str:
         """
         Generate new prompt using Crossover mutation
@@ -616,7 +614,7 @@ The newly mutated prompt is:""",
 
         Args:
             P (Sequence[str]): input prompts
-            S (Sequence[PerformanceTuple]): corresponding performance vectors.
+            S (Sequence[SEEPerformanceTuple]): corresponding performance vectors.
             **kwargs: arguments for crossover chain
 
         Returns:
@@ -642,21 +640,10 @@ The newly mutated prompt is:""",
         for parent in parents:
             parent_prompt += f"Parent prompt {len(parents)}: {parent}\n"
         if self.crossover_message is None:
+            with open("default_prompts/see_default_crossover.md", "r") as f:
+                default_crossover_prompt = f.read()
             message = AgentMessage(
-                query="""You are a mutator who is familiar with the concept of cross-over in genetic algorithm,
-namely combining the genetic information of two parents to generate new offspring.
-Given two parent prompts, you will perform a cross-over to generate an offspring
-prompt that covers the same semantic meaning as both parents.
-# Example
-Parent prompt 1: Now you are a categorizer, your mission is to ascertain the
-sentiment of the provided text, either favorable or unfavorable
-Parent prompt 2: Assign a sentiment label to the given sentence from ['negative', 'positive'] and return only the label without any other text.
-Offspring prompt: Your mission is to ascertain the sentiment of the provided text and assign a sentiment label from ['negative', 'positive'].
-
-## Given ##
-{context.parents}
-Offspring prompt:
-""",
+                query=default_crossover_prompt,
                 context={"parents": parent_prompt},
             )
         else:
@@ -668,7 +655,9 @@ Offspring prompt:
         message = self.crossover_chain(message, **kwargs)
         return message.responses[-1][1]
 
-    def feedback(self, candidate: str, performance: PerformanceTuple, **kwargs) -> str:
+    def feedback(
+        self, candidate: str, performance: SEEPerformanceTuple, **kwargs
+    ) -> str:
         """
         Generate an improved version of the prompt based on the feedback from the examiner.
 
@@ -689,18 +678,10 @@ Offspring prompt:
         wrong_cases = "\n".join(wrong_cases)
 
         if self.examiner_message is None:
+            with open("default_prompts/see_default_examiner.md", "r") as f:
+                default_examiner_prompt = f.read()
             message = AgentMessage(
-                query="""You are a quick improver. Given an existing prompt and a series of cases where it
-made mistakes. Look through each case carefully and identify what is causing the
-mistakes. Based on these observations, output ways to improve the prompts based
-on the mistakes.
-## Existing Prompt ##
-{context.candidate}
-## Cases where it gets wrong: ##
-{context.wrong_cases}
-ways to improve the existing prompt based on observations of the mistakes in the
-cases above are:
-""",
+                query=default_examiner_prompt,
                 context={"candidate": candidate, "wrong_cases": wrong_cases},
             )
         else:
@@ -714,14 +695,10 @@ cases above are:
 
         feedback_msg = message.responses[-1][1]
         if self.improver_message is None:
+            with open("default_prompts/see_default_improver.md", "r") as f:
+                default_improver_prompt = f.read()
             message = AgentMessage(
-                query="""You are a quick improver. Given an existing prompt and feedback on how it should
-improve. Create an improved version based on the feedback.
-## Existing Prompt ##
-{context.candidate}
-## Feedback ##
-{context.feedback}
-## Improved Prompt ##""",
+                query=default_improver_prompt,
                 context={"candidate": candidate, "feedback": feedback_msg},
             )
         else:
@@ -1166,7 +1143,21 @@ class PromptOptimizationEnv(gym.Env):
 
 
 class RLPromptAugmenter(BasePromptAugmenter):
-    """RL-based prompt augmenter using policy gradient methods."""
+    """RL-based prompt augmenter using policy gradient methods.
+
+    **RL problem fomulation**
+    - State/observation: the current prompt (represented by its embedding vector)
+    - Action: selecting one of the available prompt augmenters to apply
+    - Reward: there are 2 types of reward signals in this task:
+        1. The quality score of the resulting prompt after applying the selected augmenter, which is computed by the reward model in the environment.
+        2. The accuracy of the resulting prompt on the dev set.
+    - Transition: applying an augmenter modifies the current prompt and leads to a new state (new prompt embedding).
+    - Environment: the PromptOptimizationEnv class
+
+    Translate to gymnasium:
+    - State: gymnasium.spaces.Box (n dimensional vector)
+    - Action: gymnasium.spaces.Discrete (number of augmenters)
+    """
 
     model_config = {"arbitrary_types_allowed": True}
     env: PromptOptimizationEnv = Field(
