@@ -1,13 +1,19 @@
 import abc
+import re
 import warnings
 from collections.abc import Callable, Sequence
 from importlib import resources as importlib_resources
+from typing import Any, Dict, List, Literal, Tuple
 
 import gymnasium as gym
+import nltk
 import numpy as np
 import torch
 from gymnasium import spaces
 from pydantic import Field, PrivateAttr, field_validator
+from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH
+
+from aap_core.dedup_config import MinHashAlgoConfig, MinHashLSHAlgoConfig
 
 from .policy import BasePolicy
 
@@ -120,6 +126,130 @@ class MetaPromptAugmenter(BasePromptAugmenter):
 
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         message = self.chain.invoke(message, **kwargs)
+        return message
+
+
+class DeduplicationPromptAugmenter(BasePromptAugmenter):
+    """A prompt augmenter that deduplicates the generated prompt.
+
+    A prompt with repeated sentences makes the LLM model harder to focus on the
+    correct information and wastes token budget. This class focuses on exact or
+    near-duplications at the sentence level using MinHash-based similarity.
+
+    Supports three algorithms:
+    - **minhash**: Uses C-MinHash with CMinHashDeduplicator for exact deduplication
+    - **minhash_lsh**: Uses R-MinHash with LSH (Locality-Sensitive Hashing) for
+      efficient near-duplicate detection at scale
+
+    We do not use semantic deduplication. Semantic similarity, in usual cases,
+    helps strengthen the context in the prompt and helps the model more likely
+    to generate the right answer.
+    """
+
+    _dedup: Any = PrivateAttr(default=None)
+    _algo_config: Any = PrivateAttr()
+
+    def __init__(
+        self,
+        algo_args: Dict[str, Any],
+        **kwargs,
+    ):
+        # Validate and normalize algorithm_name
+        algo_name = algo_args.get("algorithm_name", "minhash")
+        if algo_name == "minhash":
+            algo_config = MinHashAlgoConfig(**algo_args)
+            dedup = CMinHashDeduplicator(
+                threshold=algo_config.threshold,
+                num_perm=algo_config.num_perm,
+                seed=algo_config.seed,
+            )
+        elif algo_name == "minhash_lsh":
+            algo_config = MinHashLSHAlgoConfig(**algo_args)
+            dedup = RMinHashLSH(
+                threshold=algo_config.threshold,
+                num_perm=algo_config.num_perm,
+                num_bands=algo_config.num_bands,
+            )
+        elif algo_name == "simhash":
+            raise NotImplementedError(
+                "SimHash algorithm is not implemented yet. Only 'minhash' and 'minhash_lsh' are supported."
+            )
+        else:
+            raise ValueError(f"Unsupported algorithm: {algo_name}")
+
+        super().__init__(**kwargs)
+
+        # Set private attributes AFTER super().__init__() (Pydantic v2 requirement)
+        self._algo_config = algo_config  # type: ignore[attr-defined]
+        self._dedup = dedup  # type: ignore[attr-defined]
+
+    def _deduplicate_minhash(self, sentences: list[str]) -> list[str]:
+        """Deduplicate sentences using C-MinHash with CMinHashDeduplicator.
+
+        Uses exact minhash comparison via is_duplicate() and add() methods.
+        Clears the deduplication index once before processing all sentences.
+        """
+        self._dedup.clear()
+        deduped_sentences = []
+        for sent in sentences:
+            tokens = re.findall(r"\b\w+\b", sent.lower())
+            if not tokens:
+                deduped_sentences.append(sent)
+                continue
+            mh = CMinHash(
+                num_perm=self._algo_config.num_perm,
+                seed=self._algo_config.seed,
+            )
+            mh.update(tokens)
+            if not self._dedup.is_duplicate(f"sent_{len(deduped_sentences)}", mh):
+                self._dedup.add(f"sent_{len(deduped_sentences)}", mh)
+                deduped_sentences.append(sent)
+        return deduped_sentences
+
+    def _deduplicate_minhash_lsh(self, sentences: list[str]) -> list[str]:
+        """Deduplicate sentences using R-MinHash with LSH.
+
+        Creates a new RMinHashLSH instance per call (no clear() method).
+        Uses query() to check for similar items, then insert() to add non-duplicates.
+        """
+        self._dedup = RMinHashLSH(
+            threshold=self._algo_config.threshold,
+            num_perm=self._algo_config.num_perm,
+            num_bands=self._algo_config.num_bands,
+        )
+        deduped_sentences = []
+        for sent in sentences:
+            tokens = re.findall(r"\b\w+\b", sent.lower())
+            if not tokens:
+                deduped_sentences.append(sent)
+                continue
+            mh = RMinHash(
+                num_perm=self._algo_config.num_perm,
+                seed=self._algo_config.seed,
+            )
+            mh.update(tokens)
+            # query() returns a list of keys of potentially similar items
+            candidates = self._dedup.query(mh)
+            if candidates:
+                # Found similar items in the index, skip this sentence
+                continue
+            # Not a duplicate, insert it
+            self._dedup.insert(len(deduped_sentences), mh)
+            deduped_sentences.append(sent)
+        return deduped_sentences
+
+    def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
+        if not message.query:
+            return message
+
+        sentences = nltk.sent_tokenize(message.query.strip())
+
+        if self._algo_config.algorithm_name == "minhash_lsh":
+            deduped_sentences = self._deduplicate_minhash_lsh(sentences)
+        else:
+            deduped_sentences = self._deduplicate_minhash(sentences)
+
+        message.query = " ".join(deduped_sentences)
         return message
 
 
@@ -419,7 +549,11 @@ class SEEPromptAugmenter(BasePromptAugmenter):
     @classmethod
     def _load_default_prompt(cls, filename: str) -> str:
         """Load a default prompt file from the package resources."""
-        with importlib_resources.files("aap_core.default_prompts").joinpath(filename).open("r") as f:
+        with (
+            importlib_resources.files("aap_core.default_prompts")
+            .joinpath(filename)
+            .open("r") as f
+        ):
             return f.read()
 
     @classmethod
@@ -481,7 +615,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         )
         if self.lamarckian_message is None:
             # The default prompt in the paper
-            default_lamarckian_prompt = SEEPromptAugmenter._load_default_prompt("see_default_lamarckian.md")
+            default_lamarckian_prompt = SEEPromptAugmenter._load_default_prompt(
+                "see_default_lamarckian.md"
+            )
             message = AgentMessage(
                 query=default_lamarckian_prompt,
                 context={"pairs": dataset},
@@ -529,7 +665,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         parents = [candidates[i] for i in list(map(int, indices))]
         cand_str = "\n\n".join(parents)
         if self.eda_message is None:
-            default_eda_prompt = SEEPromptAugmenter._load_default_prompt("see_default_eda.md")
+            default_eda_prompt = SEEPromptAugmenter._load_default_prompt(
+                "see_default_eda.md"
+            )
             message = AgentMessage(
                 query=default_eda_prompt,
                 context={"candidates": cand_str},
@@ -644,7 +782,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         for parent in parents:
             parent_prompt += f"Parent prompt {len(parents)}: {parent}\n"
         if self.crossover_message is None:
-            default_crossover_prompt = SEEPromptAugmenter._load_default_prompt("see_default_crossover.md")
+            default_crossover_prompt = SEEPromptAugmenter._load_default_prompt(
+                "see_default_crossover.md"
+            )
             message = AgentMessage(
                 query=default_crossover_prompt,
                 context={"parents": parent_prompt},
@@ -681,7 +821,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         wrong_cases = "\n".join(wrong_cases)
 
         if self.examiner_message is None:
-            default_examiner_prompt = SEEPromptAugmenter._load_default_prompt("see_default_examiner.md")
+            default_examiner_prompt = SEEPromptAugmenter._load_default_prompt(
+                "see_default_examiner.md"
+            )
             message = AgentMessage(
                 query=default_examiner_prompt,
                 context={"candidate": candidate, "wrong_cases": wrong_cases},
@@ -697,7 +839,9 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
         feedback_msg = message.responses[-1][1]
         if self.improver_message is None:
-            default_improver_prompt = SEEPromptAugmenter._load_default_prompt("see_default_improver.md")
+            default_improver_prompt = SEEPromptAugmenter._load_default_prompt(
+                "see_default_improver.md"
+            )
             message = AgentMessage(
                 query=default_improver_prompt,
                 context={"candidate": candidate, "feedback": feedback_msg},

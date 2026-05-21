@@ -18,7 +18,8 @@ dependencies = [
     "sacrebleu>=2.5.1",
     "scipy>=1.15.3",
     "wandb>=0.27.0",
-    "torch"
+    "torch",
+    "rensa>=0.4.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3.10",

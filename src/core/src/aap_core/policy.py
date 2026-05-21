@@ -861,12 +861,13 @@ class GPT2RoPEGQAPolicy(BasePolicy):
     ):
         super().__init__(action_space, observation_space)
 
-        self.n_embd = n_embd
-        self.block_size = block_size
         self.action_dim = int(action_space.n)
         self.use_value_head = use_value_head
+        self.n_layer = n_layer
         self.n_head = n_head
         self.n_kv_groups = n_kv_groups
+        self.n_embd = n_embd
+        self.block_size = block_size
 
         # Project observations to embedding dimension
         obs_dim = observation_space.shape[0]
