@@ -1,7 +1,7 @@
 import abc
 import warnings
 from collections.abc import Callable, Sequence
-from typing import Dict, List, Literal, Tuple
+from importlib import resources as importlib_resources
 
 import gymnasium as gym
 import numpy as np
@@ -417,6 +417,12 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         return P_t[:pool_size], S_t[:pool_size]
 
     @classmethod
+    def _load_default_prompt(cls, filename: str) -> str:
+        """Load a default prompt file from the package resources."""
+        with importlib_resources.files("aap_core.default_prompts").joinpath(filename).open("r") as f:
+            return f.read()
+
+    @classmethod
     def _selection_random(
         cls, num_parents: int, S: Sequence[SEEPerformanceTuple]
     ) -> List[int]:
@@ -475,8 +481,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         )
         if self.lamarckian_message is None:
             # The default prompt in the paper
-            with open("default_prompts/see_default_lamarckian.md", "r") as f:
-                default_lamarckian_prompt = f.read()
+            default_lamarckian_prompt = SEEPromptAugmenter._load_default_prompt("see_default_lamarckian.md")
             message = AgentMessage(
                 query=default_lamarckian_prompt,
                 context={"pairs": dataset},
@@ -524,8 +529,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         parents = [candidates[i] for i in list(map(int, indices))]
         cand_str = "\n\n".join(parents)
         if self.eda_message is None:
-            with open("default_prompts/see_default_eda.md", "r") as f:
-                default_eda_prompt = f.read()
+            default_eda_prompt = SEEPromptAugmenter._load_default_prompt("see_default_eda.md")
             message = AgentMessage(
                 query=default_eda_prompt,
                 context={"candidates": cand_str},
@@ -640,8 +644,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         for parent in parents:
             parent_prompt += f"Parent prompt {len(parents)}: {parent}\n"
         if self.crossover_message is None:
-            with open("default_prompts/see_default_crossover.md", "r") as f:
-                default_crossover_prompt = f.read()
+            default_crossover_prompt = SEEPromptAugmenter._load_default_prompt("see_default_crossover.md")
             message = AgentMessage(
                 query=default_crossover_prompt,
                 context={"parents": parent_prompt},
@@ -678,8 +681,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
         wrong_cases = "\n".join(wrong_cases)
 
         if self.examiner_message is None:
-            with open("default_prompts/see_default_examiner.md", "r") as f:
-                default_examiner_prompt = f.read()
+            default_examiner_prompt = SEEPromptAugmenter._load_default_prompt("see_default_examiner.md")
             message = AgentMessage(
                 query=default_examiner_prompt,
                 context={"candidate": candidate, "wrong_cases": wrong_cases},
@@ -695,8 +697,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
         feedback_msg = message.responses[-1][1]
         if self.improver_message is None:
-            with open("default_prompts/see_default_improver.md", "r") as f:
-                default_improver_prompt = f.read()
+            default_improver_prompt = SEEPromptAugmenter._load_default_prompt("see_default_improver.md")
             message = AgentMessage(
                 query=default_improver_prompt,
                 context={"candidate": candidate, "feedback": feedback_msg},
