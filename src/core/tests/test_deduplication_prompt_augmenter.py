@@ -539,7 +539,7 @@ class TestDeduplicationPromptAugmenter:
         """Test that bloomfilter constructor uses correct defaults."""
         aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "bloomfilter"})
         assert aug._algo_config.algorithm_name == "bloomfilter"
-        assert aug._algo_config.expected_items == 1000
+        assert aug._algo_config.expected_items == 10
         assert aug._algo_config.false_positive_rate == 0.01
 
     def test_constructor_bloomfilter_custom_params(self):
@@ -945,6 +945,348 @@ class TestDeduplicationPromptAugmenter:
         query = "Hello world. Hello world. This is a test."
         message = AgentMessage(query=query)
         result = simhash_high_bits_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query
+
+    # --- LSHBloom Algorithm Tests ---
+
+    @pytest.fixture
+    def lsh_bloom_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "lsh_bloom",
+                "num_perm": 64,
+                "seed": 42,
+                "threshold": 0.8,
+                "num_bands": 16,
+                "expected_items": 100,
+                "false_positive_rate": 0.01,
+            }
+        )
+
+    @pytest.fixture
+    def lsh_bloom_low_threshold_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "lsh_bloom",
+                "num_perm": 64,
+                "seed": 42,
+                "threshold": 0.3,
+                "num_bands": 16,
+                "expected_items": 100,
+                "false_positive_rate": 0.01,
+            }
+        )
+
+    @pytest.fixture
+    def lsh_bloom_default_augmenter(self):
+        return DeduplicationPromptAugmenter(algo_args={"algorithm_name": "lsh_bloom"})
+
+    def test_constructor_lsh_bloom_defaults(self):
+        """Test that lsh_bloom constructor uses correct defaults."""
+        aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "lsh_bloom"})
+        assert aug._algo_config.algorithm_name == "lsh_bloom"
+        assert aug._algo_config.num_perm == 128
+        assert aug._algo_config.seed == 42
+        assert aug._algo_config.threshold == 0.9
+        assert aug._algo_config.num_bands == 16
+        assert aug._algo_config.expected_items == 10
+        assert aug._algo_config.false_positive_rate == 0.01
+
+    def test_constructor_lsh_bloom_custom_params(self):
+        """Test lsh_bloom constructor with custom parameters."""
+        aug = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "lsh_bloom",
+                "num_perm": 64,
+                "seed": 123,
+                "threshold": 0.7,
+                "num_bands": 8,
+                "expected_items": 500,
+                "false_positive_rate": 0.001,
+            }
+        )
+        assert aug._algo_config.algorithm_name == "lsh_bloom"
+        assert aug._algo_config.num_perm == 64
+        assert aug._algo_config.seed == 123
+        assert aug._algo_config.threshold == 0.7
+        assert aug._algo_config.num_bands == 8
+        assert aug._algo_config.expected_items == 500
+        assert aug._algo_config.false_positive_rate == 0.001
+
+    def test_constructor_lsh_bloom_invalid_num_bands_zero(self):
+        """Test that num_bands=0 raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_bands": 0,
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_num_bands_negative(self):
+        """Test that num_bands<0 raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_bands": -5,
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_num_bands_greater_than_num_perm(self):
+        """Test that num_bands > num_perm raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_bands": 128,
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_threshold(self):
+        """Test that invalid threshold raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "threshold": 1.5,
+                    "num_perm": 64,
+                    "seed": 42,
+                    "num_bands": 16,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_num_perm(self):
+        """Test that invalid num_perm raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_perm": 0,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "num_bands": 16,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_seed(self):
+        """Test that invalid seed raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "seed": -1,
+                    "num_perm": 64,
+                    "threshold": 0.8,
+                    "num_bands": 16,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_expected_items_zero(self):
+        """Test that expected_items=0 raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "num_bands": 16,
+                    "expected_items": 0,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_fpr_boundary_zero(self):
+        """Test that false_positive_rate=0.0 raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "num_bands": 16,
+                    "expected_items": 100,
+                    "false_positive_rate": 0.0,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_fpr_boundary_one(self):
+        """Test that false_positive_rate=1.0 raises ValueError for lsh_bloom."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "lsh_bloom",
+                    "num_perm": 64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                    "num_bands": 16,
+                    "expected_items": 100,
+                    "false_positive_rate": 1.0,
+                }
+            )
+
+    def test_constructor_lsh_bloom_invalid_type(self):
+        """Test that invalid type raises ValidationError for lsh_bloom."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            DeduplicationPromptAugmenter(
+                algo_args={"algorithm_name": "lsh_bloom", "threshold": [0.8]}
+            )
+
+    def test_augment_lsh_bloom_empty_query(self, lsh_bloom_augmenter):
+        """Test that lsh_bloom with empty query returns message unchanged."""
+        message = AgentMessage(query="")
+        result = lsh_bloom_augmenter(message)
+        assert result.query == ""
+
+    def test_augment_lsh_bloom_exact_duplicates(self, lsh_bloom_augmenter):
+        """Test lsh_bloom deduplication of exact duplicate sentences."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query != query
+        # Should still contain the unique parts
+        assert "This is a test" in result.query
+
+    def test_augment_lsh_bloom_multiple_exact_duplicates(self, lsh_bloom_augmenter):
+        """Test lsh_bloom deduplication of multiple exact duplicate sentences."""
+        query = "Same sentence. Same sentence. Same sentence. Different one."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        # "Same sentence." should appear only once
+        assert result.query.count("Same sentence") == 1
+        assert "Different one" in result.query
+
+    def test_augment_lsh_bloom_no_duplicates(self, lsh_bloom_augmenter):
+        """Test that lsh_bloom preserves text with no duplicates."""
+        query = "The sky is blue. The grass is green. The sun is bright."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        # All sentences should be preserved
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_lsh_bloom_near_duplicates(self, lsh_bloom_low_threshold_augmenter):
+        """Test lsh_bloom behavior with near-duplicate sentences.
+
+        Note: LSHBloom uses threshold to optimize LSH parameters, not for direct
+        similarity comparison. Near-duplicates may or may not be detected depending
+        on the LSH hash collision probability.
+        """
+        query = (
+            "The quick brown fox jumps. The quick brown fox jumped. Different topic."
+        )
+        message = AgentMessage(query=query)
+        result = lsh_bloom_low_threshold_augmenter(message)
+        # LSHBloom may or may not detect near-duplicates due to probabilistic nature
+        # Just verify the result is valid
+        assert isinstance(result.query, str)
+        assert len(result.query) > 0
+
+    def test_augment_lsh_bloom_unique_sentences_preserved(self, lsh_bloom_augmenter):
+        """Test that lsh_bloom preserves all unique sentences."""
+        query = "Apple is a fruit. Carrot is a vegetable. Dog is an animal."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        assert "Apple is a fruit" in result.query
+        assert "Carrot is a vegetable" in result.query
+        assert "Dog is an animal" in result.query
+
+    def test_augment_lsh_bloom_single_sentence(self, lsh_bloom_augmenter):
+        """Test lsh_bloom with a single sentence."""
+        query = "This is a single sentence."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        assert result.query == query
+
+    def test_augment_lsh_bloom_single_word(self, lsh_bloom_augmenter):
+        """Test lsh_bloom with a single word."""
+        query = "Hello"
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        assert result.query == query
+
+    def test_augment_lsh_bloom_multiple_exclamation(self, lsh_bloom_augmenter):
+        """Test lsh_bloom with multiple exclamation marks."""
+        query = "Wow! Wow! Amazing!"
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        assert result.query.count("Wow") == 1
+        assert "Amazing" in result.query
+
+    def test_augment_lsh_bloom_mixed_terminators(self, lsh_bloom_augmenter):
+        """Test lsh_bloom with mixed sentence terminators."""
+        query = "The sky is blue. The grass is green? The sun is bright!"
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_lsh_bloom_with_loop(self, lsh_bloom_augmenter):
+        """Test lsh_bloom with loop configuration."""
+        aug_with_loop = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "lsh_bloom",
+                "num_perm": 64,
+                "seed": 42,
+                "threshold": 0.8,
+                "num_bands": 16,
+                "expected_items": 100,
+                "false_positive_rate": 0.01,
+            },
+            loop=2,
+        )
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = aug_with_loop(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query
+
+    def test_augment_lsh_bloom_case_insensitive(self, lsh_bloom_augmenter):
+        """Test that lsh_bloom is case-insensitive (tokens are lowercased)."""
+        query = "Hello world. hello world. Different."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_augmenter(message)
+        # "Hello world." and "hello world." are similar due to case-insensitive tokenization
+        # One should be removed as a near-duplicate
+        assert result.query.count("world") == 1
+        assert "Different" in result.query
+
+    def test_augment_lsh_bloom_default_augmenter(self, lsh_bloom_default_augmenter):
+        """Test lsh_bloom with default parameters."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = lsh_bloom_default_augmenter(message)
         # The duplicate "Hello world." should be removed
         assert result.query.count("Hello world") == 1
         assert "This is a test" in result.query

@@ -20,6 +20,7 @@ dependencies = [
     "wandb>=0.27.0",
     "torch",
     "rensa>=0.4.0",
+    "rbloom>=1.5.4",
 ]
 classifiers = [
     "Programming Language :: Python :: 3.10",

@@ -3,19 +3,20 @@ import re
 import warnings
 from collections.abc import Callable, Sequence
 from importlib import resources as importlib_resources
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, ClassVar, Dict, List, Literal, Tuple
 
 import gymnasium as gym
 import nltk
 import numpy as np
 import torch
 from gymnasium import spaces
-from pydantic import Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from rbloom import Bloom
 from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH
 
 from aap_core.dedup_config import (
     BloomAlgoConfig,
+    LSHBloomAlgoConfig,
     MinHashAlgoConfig,
     MinHashLSHAlgoConfig,
     SimHashAlgoConfig,
@@ -135,7 +136,7 @@ class MetaPromptAugmenter(BasePromptAugmenter):
         return message
 
 
-class SimHash:
+class SimHash(BaseModel):
     """A custom SimHash implementation using numpy.
 
     SimHash produces a fingerprint for each document/sentence, and near-duplicates
@@ -149,9 +150,17 @@ class SimHash:
     4. Take the sign of each element to get the final fingerprint
     """
 
-    def __init__(self, hash_bits: int = 64, seed: int = 42):
-        self.hash_bits = hash_bits
-        self.rng = np.random.RandomState(seed)
+    hash_bits: Literal[64, 128] = Field(
+        default=64, gt=0, description="Number of bits in the fingerprint"
+    )
+    seed: int = Field(default=42, ge=0, description="Random seed for reproducibility")
+    _rng: Any = PrivateAttr(default=None)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    def model_post_init(self, __context: Any) -> None:
+        """Initialize the random number generator after model initialization."""
+        self._rng = np.random.RandomState(self.seed)
 
     @staticmethod
     def _token_hash(
@@ -159,7 +168,8 @@ class SimHash:
     ) -> np.ndarray:
         """Compute a hash bit vector for a token.
 
-        Uses a simple hash function to generate a random bit vector.
+        Uses the random number generator to create a random bit vector
+        based on the token's hash value.
         """
         # Use Python's built-in hash combined with position for stability
         h = hash(token)
@@ -187,7 +197,7 @@ class SimHash:
 
         for token in tokens:
             # Get hash bits for this token
-            token_hash = self._token_hash(token, self.hash_bits, self.rng)
+            token_hash = self._token_hash(token, self.hash_bits, self._rng)
             # Add weighted contribution to signature
             signature += token_hash.astype(np.float64)
 
@@ -228,6 +238,180 @@ class SimHash:
         return 1.0 - (distance / hash_bits)
 
 
+class LSHBloom(BaseModel):
+    """LSH-Bloom Filter implementation for space-efficient near-duplicate detection.
+
+    This implementation combines MinHash with Locality-Sensitive Hashing (LSH)
+    where each band's hash table is replaced by a Bloom filter. This approach
+    drastically reduces space usage compared to traditional LSH while maintaining
+    good near-duplicate detection capabilities.
+
+    Inspired by the LSHBloom algorithm from https://arxiv.org/abs/2411.04257
+    and the datasketch implementation.
+
+    Each band's Bloom filter stores ``sum(hashvalues) % MersennePrime`` instead of
+    all individual hash values, making it suitable for large-scale deduplication
+    scenarios with millions or billions of documents.
+
+    Attributes:
+        num_bands: Number of bands in the LSH index.
+        band_size: Number of hash values per band (num_perm / num_bands).
+        bloom_filters: List of Bloom filters, one per band.
+        num_perm: Number of permutations for MinHash.
+        seed: Random seed for reproducibility.
+        threshold: Similarity threshold for duplicate detection.
+    """
+
+    _MERSIANE_PRIME: ClassVar[int] = (1 << 61) - 1  # Mersenne prime 2^61 - 1
+
+    threshold: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for duplicate detection (0.0 to 1.0)",
+    )
+    num_perm: int = Field(
+        default=128, gt=0, description="Number of permutations for MinHash"
+    )
+    num_bands: int = Field(
+        default=16, gt=0, description="Number of bands for LSH index"
+    )
+    expected_items: int = Field(
+        default=10,
+        gt=0,
+        description="Expected number of items to add to each Bloom filter",
+    )
+    false_positive_rate: float = Field(
+        default=0.01,
+        gt=0.0,
+        lt=1.0,
+        description="Desired false positive rate for each Bloom filter (0.0 to 1.0)",
+    )
+    seed: int = Field(default=42, ge=0, description="Random seed for reproducibility")
+
+    _band_size: int = PrivateAttr(default=0)
+    _bloom_filters: list[Bloom] = PrivateAttr(default_factory=list)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @field_validator("num_bands")
+    @classmethod
+    def validate_num_bands(cls, v: int, info: Any) -> int:
+        """Validate that num_bands is less than num_perm."""
+        num_perm = info.data.get("num_perm", 128)
+        if v > num_perm:
+            raise ValueError("num_bands cannot be greater than num_perm")
+        return v
+
+    def model_post_init(self, __context: Any) -> None:
+        """Initialize derived attributes and Bloom filters after model initialization."""
+        self._band_size = self.num_perm // self.num_bands
+        self._bloom_filters = [
+            Bloom(
+                expected_items=self.expected_items,
+                false_positive_rate=self.false_positive_rate,
+            )
+            for _ in range(self.num_bands)
+        ]
+
+    def _compute_band_hash(self, hashvalues: list[int]) -> int:
+        """Compute a single hash value for a band using sum of hashvalues.
+
+        This is the key space optimization: instead of storing all hash values
+        in the Bloom filter, we store a single hash of their sum.
+
+        Args:
+            hashvalues: List of hash values for a single band.
+
+        Returns:
+            A single hash value to store in the Bloom filter.
+        """
+        return sum(hashvalues) % self._MERSIANE_PRIME
+
+    def insert(self, minhash_key: str, mh: CMinHash | RMinHash) -> None:
+        """Insert a MinHash into the LSH-Bloom index.
+
+        Args:
+            minhash_key: A unique key for the item (e.g., sentence index).
+                        This is kept for API compatibility but not used in storage.
+            mh: A MinHash object (CMinHash or RMinHash) with computed hash values.
+        """
+        # Get the hash values from the MinHash
+        hash_values = self._get_minhash_values(mh)
+
+        for band_idx in range(self.num_bands):
+            start = band_idx * self._band_size
+            end = start + self._band_size
+            band_values = hash_values[start:end]
+            band_hash = self._compute_band_hash(band_values)
+            # Store just the band hash, matching datasketch implementation
+            self._bloom_filters[band_idx].add(band_hash)
+
+    def query(self, mh: CMinHash | RMinHash) -> bool:
+        """Query whether a MinHash has a potential match in the index.
+
+        Args:
+            mh: A MinHash object (CMinHash or RMinHash) with computed hash values.
+
+        Returns:
+            True if there's a potential match (possible duplicate), False otherwise.
+        """
+        hash_values = self._get_minhash_values(mh)
+
+        for band_idx in range(self.num_bands):
+            start = band_idx * self._band_size
+            end = start + self._band_size
+            band_values = hash_values[start:end]
+            band_hash = self._compute_band_hash(band_values)
+
+            # Check if band hash exists in the Bloom filter
+            # Use 'in' operator since rbloom.Bloom uses __contains__
+            if band_hash not in self._bloom_filters[band_idx]:
+                return False
+
+        # All bands matched - potential duplicate
+        return True
+
+    def clear(self) -> None:
+        """Clear all Bloom filters in the index."""
+        for bloom_filter in self._bloom_filters:
+            bloom_filter.clear()
+
+    @staticmethod
+    def _get_minhash_values(mh) -> list[int]:
+        """Extract hash values from a MinHash object.
+
+        This method extracts the hash values from either CMinHash or RMinHash
+        objects by using their internal hash representation.
+
+        Args:
+            mh: A MinHash object (CMinHash or RMinHash).
+
+        Returns:
+            List of integer hash values.
+        """
+        # For rensa's CMinHash and RMinHash, use the digest() method
+        if hasattr(mh, "digest") and callable(mh.digest):
+            return list(mh.digest())
+        elif hasattr(mh, "h"):
+            # CMinHash has 'h' attribute with hash values
+            val = mh.h
+            if hasattr(val, "tolist"):
+                return val.tolist()
+            return list(val)
+        elif hasattr(mh, "hash_values"):
+            # Some MinHash implementations use 'hash_values'
+            val = mh.hash_values
+            if hasattr(val, "tolist"):
+                return val.tolist()
+            return list(val)
+        else:
+            raise ValueError(
+                "Unable to extract hash values from MinHash object. "
+                "Expected CMinHash or RMinHash from rensa library."
+            )
+
+
 class DeduplicationPromptAugmenter(BasePromptAugmenter):
     """A prompt augmenter that deduplicates the generated prompt.
 
@@ -235,12 +419,14 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
     correct information and wastes token budget. This class focuses on exact or
     near-duplications at the sentence level.
 
-    Supports four algorithms:
+    Supports five algorithms:
     - **minhash**: Uses C-MinHash with CMinHashDeduplicator for exact deduplication
     - **minhash_lsh**: Uses R-MinHash with LSH (Locality-Sensitive Hashing) for
       efficient near-duplicate detection at scale
     - **bloomfilter**: Uses Bloom Filter for fast probabilistic exact deduplication
     - **simhash**: Uses custom numpy-based SimHash for near-duplicate detection
+    - **lsh_bloom**: Uses MinHash with LSH-Bloom Filter for space-efficient
+      near-duplicate detection at very large scale
 
     We do not use semantic deduplication. Semantic similarity, in usual cases,
     helps strengthen the context in the prompt and helps the model more likely
@@ -281,6 +467,16 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             algo_config = SimHashAlgoConfig(**algo_args)
             dedup = SimHash(
                 hash_bits=algo_config.hash_bits,
+                seed=algo_config.seed,
+            )
+        elif algo_name == "lsh_bloom":
+            algo_config = LSHBloomAlgoConfig(**algo_args)
+            dedup = LSHBloom(
+                threshold=algo_config.threshold,
+                num_perm=algo_config.num_perm,
+                num_bands=algo_config.num_bands,
+                expected_items=algo_config.expected_items,
+                false_positive_rate=algo_config.false_positive_rate,
                 seed=algo_config.seed,
             )
         else:
@@ -404,25 +600,56 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
 
         return deduped_sentences
 
+    def _deduplicate_lsh_bloom(self, sentences: list[str]) -> list[str]:
+        """Deduplicate sentences using LSH-Bloom Filter.
+
+        Uses MinHash with LSH-Bloom Filter for space-efficient near-duplicate detection.
+        Creates a new LSHBloom instance per call (no clear() method needed as it's
+        recreated for each deduplication pass).
+
+        Inspired by the LSHBloom algorithm from https://arxiv.org/abs/2411.04257
+        """
+        self._dedup = LSHBloom(
+            threshold=self._algo_config.threshold,
+            num_perm=self._algo_config.num_perm,
+            num_bands=self._algo_config.num_bands,
+            expected_items=self._algo_config.expected_items,
+            false_positive_rate=self._algo_config.false_positive_rate,
+            seed=self._algo_config.seed,
+        )
+        deduped_sentences = []
+        for sent in sentences:
+            tokens = re.findall(r"\b\w+\b", sent.lower())
+            if not tokens:
+                deduped_sentences.append(sent)
+                continue
+            mh = RMinHash(
+                num_perm=self._algo_config.num_perm,
+                seed=self._algo_config.seed,
+            )
+            mh.update(tokens)
+            # Query first to check for potential duplicates
+            if self._dedup.query(mh):
+                # Potential duplicate found, skip this sentence
+                continue
+            # Not a duplicate, insert it
+            self._dedup.insert(f"sent_{len(deduped_sentences)}", mh)
+            deduped_sentences.append(sent)
+        return deduped_sentences
+
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         if not message.query:
             return message
 
+        deup_funcmap = {
+            "minhash": self._deduplicate_minhash,
+            "minhash_lsh": self._deduplicate_minhash_lsh,
+            "bloomfilter": self._deduplicate_bloomfilter,
+            "simhash": self._deduplicate_simhash,
+            "lsh_bloom": self._deduplicate_lsh_bloom,
+        }
         sentences = nltk.sent_tokenize(message.query.strip())
-
-        if self._algo_config.algorithm_name == "minhash":
-            deduped_sentences = self._deduplicate_minhash(sentences)
-        elif self._algo_config.algorithm_name == "minhash_lsh":
-            deduped_sentences = self._deduplicate_minhash_lsh(sentences)
-        elif self._algo_config.algorithm_name == "bloomfilter":
-            deduped_sentences = self._deduplicate_bloomfilter(sentences)
-        elif self._algo_config.algorithm_name == "simhash":
-            deduped_sentences = self._deduplicate_simhash(sentences)
-        else:
-            raise ValueError(
-                f"Unsupported algorithm: {self._algo_config.algorithm_name}"
-            )
-
+        deduped_sentences = deup_funcmap[self._algo_config.algorithm_name](sentences)
         message.query = " ".join(deduped_sentences)
         return message
 
