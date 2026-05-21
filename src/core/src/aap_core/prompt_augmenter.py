@@ -1518,6 +1518,7 @@ class PromptOptimizationEnv(gym.Env):
         max_steps: int = 10,
         min_embedding_threshold: float = 0.8,
         reward_threshold: float = float("inf"),
+        penalty_weight: float = 0.2,
         eps: float = 1e-8,
     ):
         """Initialize the prompt optimization environment.
@@ -1535,6 +1536,9 @@ class PromptOptimizationEnv(gym.Env):
                 consecutive prompt embeddings falls below this threshold.
             reward_threshold: episode terminated if the reward exceeds this threshold.
                 Defaults to infinity (no reward-based termination).
+            penalty_weight: Weight multiplier for the duplication penalty. The final
+                reward is calculated as: base_reward - (duplication_penalty * penalty_weight).
+                Higher values penalize duplication more heavily. Defaults to 0.5.
         """
         super().__init__()
 
@@ -1551,6 +1555,7 @@ class PromptOptimizationEnv(gym.Env):
         self.max_steps = max_steps
         self._min_embedding_threshold = min_embedding_threshold
         self._reward_threshold = reward_threshold
+        self._penalty_weight = penalty_weight
         self.eps = eps
 
         # Determine embedding dimension by testing with initial prompt
@@ -1642,8 +1647,10 @@ class PromptOptimizationEnv(gym.Env):
             # If augmentation fails, keep the current prompt
             warnings.warn(f"Augmenter {action} failed: {e}")
 
-        # TODO: penalize with exact duplication
-        reward = self._reward_model(self._current_prompt)
+        # Calculate reward with duplication penalty (additive model)
+        base_reward = self._reward_model(self._current_prompt)
+        duplication_penalty = self._calculate_duplication_penalty(self._current_prompt)
+        reward = base_reward - (duplication_penalty * self._penalty_weight)
         self._current_embedding = self._embedding_model(self._current_prompt).astype(
             np.float32
         )
@@ -1676,9 +1683,56 @@ class PromptOptimizationEnv(gym.Env):
         observation = self._get_observation()
         info = self._get_info()
         info["terminated_reason"] = terminated_reason
+        info["duplication_penalty"] = duplication_penalty
         # self._print_state()
 
         return observation, reward, terminated, truncated, info
+
+    def _calculate_duplication_penalty(self, text: str) -> float:
+        """Calculate a penalty factor proportional to the square root of the total
+        length of duplicate text using a Bloom filter for efficient duplicate detection.
+
+        This method tokenizes the text into sentences and uses a Bloom filter to
+        probabilistically identify duplicate sentences. The penalty is calculated
+        as the square root of the total character length of all duplicate sentences,
+        making the penalty grow with the severity of duplication.
+
+        Args:
+            text: The text to analyze for duplicates.
+
+        Returns:
+            A float representing the duplication penalty, proportional to
+            sqrt(total_duplicate_chars).
+        """
+        if not text or not text.strip():
+            return 0.0
+
+        # Tokenize into sentences
+        sentences = nltk.sent_tokenize(text.strip())
+        if len(sentences) <= 1:
+            return 0.0
+
+        # Create a Bloom filter for efficient duplicate detection
+        # Expected items = number of sentences, FPR = 0.01 for low false positive rate
+        bloom = Bloom(
+            expected_items=len(sentences),
+            false_positive_rate=0.01,
+        )
+
+        # Count duplicates and accumulate their total character length
+        total_dup_chars = 0
+        for sent in sentences:
+            normalized = sent.strip().lower()
+            if normalized in bloom:
+                # Sentence already in Bloom filter - it's a duplicate
+                total_dup_chars += len(sent)
+            else:
+                # Not seen before - add to Bloom filter
+                bloom.add(normalized)
+
+        # Penalty is proportional to the square root of total duplicate text length
+        penalty = np.sqrt(total_dup_chars)
+        return penalty
 
     def _print_state(self) -> None:
         """Print the current environment state to the command line."""
