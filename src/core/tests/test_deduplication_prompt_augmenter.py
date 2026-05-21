@@ -81,12 +81,13 @@ class TestDeduplicationPromptAugmenter:
                 algo_args={"algorithm_name": "unsupported_algo"}
             )
 
-    def test_constructor_simhash_not_supported(self):
-        """Test that simhash algorithm raises ValueError (not supported)."""
-        with pytest.raises(ValueError, match="Unsupported algorithm"):
-            DeduplicationPromptAugmenter(
-                algo_args={"algorithm_name": "simhash", "threshold": 0.8}
-            )
+    def test_constructor_simhash_supported(self):
+        """Test that simhash algorithm is now supported and works."""
+        aug = DeduplicationPromptAugmenter(
+            algo_args={"algorithm_name": "simhash", "threshold": 0.8}
+        )
+        assert aug._algo_config.algorithm_name == "simhash"
+        assert aug._algo_config.threshold == 0.8
 
     def test_constructor_invalid_threshold_type(self):
         """Test that non-coercible threshold type raises ValidationError."""
@@ -710,3 +711,240 @@ class TestDeduplicationPromptAugmenter:
         assert "Hello world" in result.query
         assert "hello world" in result.query
         assert "Different" in result.query
+
+    # --- SimHash Algorithm Tests ---
+
+    @pytest.fixture
+    def simhash_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "simhash",
+                "hash_bits": 64,
+                "seed": 42,
+                "threshold": 0.8,
+            }
+        )
+
+    @pytest.fixture
+    def simhash_low_threshold_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "simhash",
+                "hash_bits": 64,
+                "seed": 42,
+                "threshold": 0.3,
+            }
+        )
+
+    @pytest.fixture
+    def simhash_high_bits_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "simhash",
+                "hash_bits": 128,
+                "seed": 42,
+                "threshold": 0.8,
+            }
+        )
+
+    def test_constructor_simhash_defaults(self):
+        """Test that simhash constructor uses correct defaults."""
+        aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "simhash"})
+        assert aug._algo_config.algorithm_name == "simhash"
+        assert aug._algo_config.hash_bits == 64
+        assert aug._algo_config.seed == 42
+        assert aug._algo_config.threshold == 0.8
+
+    def test_constructor_simhash_custom_params(self):
+        """Test simhash constructor with custom parameters."""
+        aug = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "simhash",
+                "hash_bits": 128,
+                "seed": 123,
+                "threshold": 0.7,
+            }
+        )
+        assert aug._algo_config.algorithm_name == "simhash"
+        assert aug._algo_config.hash_bits == 128
+        assert aug._algo_config.seed == 123
+        assert aug._algo_config.threshold == 0.7
+
+    def test_constructor_simhash_invalid_hash_bits_zero(self):
+        """Test that hash_bits=0 raises ValueError for simhash."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "simhash",
+                    "hash_bits": 0,
+                    "seed": 42,
+                    "threshold": 0.8,
+                }
+            )
+
+    def test_constructor_simhash_invalid_hash_bits_negative(self):
+        """Test that hash_bits<0 raises ValueError for simhash."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "simhash",
+                    "hash_bits": -64,
+                    "seed": 42,
+                    "threshold": 0.8,
+                }
+            )
+
+    def test_constructor_simhash_invalid_threshold(self):
+        """Test that invalid threshold raises ValueError for simhash."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "simhash",
+                    "threshold": 1.5,
+                    "hash_bits": 64,
+                    "seed": 42,
+                }
+            )
+
+    def test_constructor_simhash_invalid_seed(self):
+        """Test that invalid seed raises ValueError for simhash."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "simhash",
+                    "seed": -1,
+                    "hash_bits": 64,
+                    "threshold": 0.8,
+                }
+            )
+
+    def test_constructor_simhash_invalid_type(self):
+        """Test that invalid type raises ValidationError for simhash."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            DeduplicationPromptAugmenter(
+                algo_args={"algorithm_name": "simhash", "threshold": [0.8]}
+            )
+
+    def test_augment_simhash_empty_query(self, simhash_augmenter):
+        """Test that simhash with empty query returns message unchanged."""
+        message = AgentMessage(query="")
+        result = simhash_augmenter(message)
+        assert result.query == ""
+
+    def test_augment_simhash_exact_duplicates(self, simhash_augmenter):
+        """Test simhash deduplication of exact duplicate sentences."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query != query
+        # Should still contain the unique parts
+        assert "This is a test" in result.query
+
+    def test_augment_simhash_multiple_exact_duplicates(self, simhash_augmenter):
+        """Test simhash deduplication of multiple exact duplicate sentences."""
+        query = "Same sentence. Same sentence. Same sentence. Different one."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        # "Same sentence." should appear only once
+        assert result.query.count("Same sentence") == 1
+        assert "Different one" in result.query
+
+    def test_augment_simhash_no_duplicates(self, simhash_augmenter):
+        """Test that simhash preserves text with no duplicates."""
+        query = "The sky is blue. The grass is green. The sun is bright."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        # All sentences should be preserved
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_simhash_near_duplicates(self, simhash_low_threshold_augmenter):
+        """Test simhash deduplication of near-duplicate sentences with low threshold."""
+        query = (
+            "The quick brown fox jumps. The quick brown fox jumped. Different topic."
+        )
+        message = AgentMessage(query=query)
+        result = simhash_low_threshold_augmenter(message)
+        # Near-duplicates should be removed with low threshold
+        assert result.query != query
+
+    def test_augment_simhash_unique_sentences_preserved(self, simhash_augmenter):
+        """Test that simhash preserves all unique sentences."""
+        query = "Apple is a fruit. Carrot is a vegetable. Dog is an animal."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        assert "Apple is a fruit" in result.query
+        assert "Carrot is a vegetable" in result.query
+        assert "Dog is an animal" in result.query
+
+    def test_augment_simhash_single_sentence(self, simhash_augmenter):
+        """Test simhash with a single sentence."""
+        query = "This is a single sentence."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        assert result.query == query
+
+    def test_augment_simhash_single_word(self, simhash_augmenter):
+        """Test simhash with a single word."""
+        query = "Hello"
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        assert result.query == query
+
+    def test_augment_simhash_multiple_exclamation(self, simhash_augmenter):
+        """Test simhash with multiple exclamation marks."""
+        query = "Wow! Wow! Amazing!"
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        assert result.query.count("Wow") == 1
+        assert "Amazing" in result.query
+
+    def test_augment_simhash_mixed_terminators(self, simhash_augmenter):
+        """Test simhash with mixed sentence terminators."""
+        query = "The sky is blue. The grass is green? The sun is bright!"
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_simhash_with_loop(self, simhash_augmenter):
+        """Test simhash with loop configuration."""
+        aug_with_loop = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "simhash",
+                "hash_bits": 64,
+                "seed": 42,
+                "threshold": 0.8,
+            },
+            loop=2,
+        )
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = aug_with_loop(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query
+
+    def test_augment_simhash_case_sensitive(self, simhash_augmenter):
+        """Test that simhash is case-insensitive (tokens are lowercased)."""
+        query = "Hello world. hello world. Different."
+        message = AgentMessage(query=query)
+        result = simhash_augmenter(message)
+        # "Hello world." and "hello world." are similar due to case-insensitive tokenization
+        # One should be removed as a near-duplicate
+        assert result.query.count("world") == 1
+        assert "Different" in result.query
+
+    def test_augment_simhash_high_bits(self, simhash_high_bits_augmenter):
+        """Test simhash with higher hash_bits for more precision."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = simhash_high_bits_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query

@@ -89,3 +89,33 @@ class BloomAlgoConfig(BaseAlgoConfig):
         lt=1.0,
         description="Desired false positive rate (0.0 to 1.0)",
     )
+
+
+class SimHashAlgoConfig(BaseAlgoConfig):
+    """Configuration for SimHash based deduplication.
+
+    Uses a custom numpy-based SimHash implementation for near-duplicate detection.
+    SimHash produces a fingerprint for each document/sentence, and near-duplicates
+    have similar fingerprints (low Hamming distance).
+    """
+
+    algorithm_name: Literal["minhash", "minhash_lsh", "simhash", "bloomfilter"] = (
+        "simhash"
+    )
+    hash_bits: Literal[64, 128] = Field(
+        default=64,
+        gt=0,
+        description="Number of bits in the SimHash fingerprint",
+    )
+    threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for duplicate detection (0.0 to 1.0). "
+        "Sentences with similarity >= threshold are considered duplicates.",
+    )
+    seed: int = Field(
+        default=42,
+        ge=0,
+        description="Random seed for reproducibility",
+    )

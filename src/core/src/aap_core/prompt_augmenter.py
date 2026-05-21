@@ -18,6 +18,7 @@ from aap_core.dedup_config import (
     BloomAlgoConfig,
     MinHashAlgoConfig,
     MinHashLSHAlgoConfig,
+    SimHashAlgoConfig,
 )
 
 from .policy import BasePolicy
@@ -134,18 +135,112 @@ class MetaPromptAugmenter(BasePromptAugmenter):
         return message
 
 
+class SimHash:
+    """A custom SimHash implementation using numpy.
+
+    SimHash produces a fingerprint for each document/sentence, and near-duplicates
+    have similar fingerprints (low Hamming distance). This implementation does not
+    require any external dependencies beyond numpy.
+
+    Algorithm:
+    1. For each token, compute a hash to get a bit vector
+    2. Use the hash to create a weighted contribution
+    3. Sum all weighted contributions to get a signature vector
+    4. Take the sign of each element to get the final fingerprint
+    """
+
+    def __init__(self, hash_bits: int = 64, seed: int = 42):
+        self.hash_bits = hash_bits
+        self.rng = np.random.RandomState(seed)
+
+    @staticmethod
+    def _token_hash(
+        token: str, hash_bits: int, rng: np.random.RandomState
+    ) -> np.ndarray:
+        """Compute a hash bit vector for a token.
+
+        Uses a simple hash function to generate a random bit vector.
+        """
+        # Use Python's built-in hash combined with position for stability
+        h = hash(token)
+        bits = np.zeros(hash_bits, dtype=np.int8)
+        for i in range(hash_bits):
+            # Use different bits of the hash for each position
+            bits[i] = 1 if (h >> (i % 64)) & 1 else -1
+        return bits
+
+    def compute_hash(self, text: str) -> np.ndarray:
+        """Compute the SimHash fingerprint for a text.
+
+        Args:
+            text: The input text to hash.
+
+        Returns:
+            A numpy array of int8 values (-1 or 1) representing the fingerprint.
+        """
+        tokens = re.findall(r"\b\w+\b", text.lower())
+        if not tokens:
+            return np.zeros(self.hash_bits, dtype=np.int8)
+
+        # Initialize signature vector
+        signature = np.zeros(self.hash_bits, dtype=np.float64)
+
+        for token in tokens:
+            # Get hash bits for this token
+            token_hash = self._token_hash(token, self.hash_bits, self.rng)
+            # Add weighted contribution to signature
+            signature += token_hash.astype(np.float64)
+
+        # Convert to fingerprint: +1 if positive, -1 if negative
+        fingerprint = np.sign(signature).astype(np.int8)
+        # Handle zeros (treat as +1)
+        fingerprint[fingerprint == 0] = 1
+        return fingerprint
+
+    @staticmethod
+    def hamming_distance(hash1: np.ndarray, hash2: np.ndarray) -> int:
+        """Compute the Hamming distance between two SimHash fingerprints.
+
+        Args:
+            hash1: First fingerprint array.
+            hash2: Second fingerprint array.
+
+        Returns:
+            The Hamming distance (number of differing bits).
+        """
+        return int(np.sum(hash1 != hash2))
+
+    @staticmethod
+    def similarity(hash1: np.ndarray, hash2: np.ndarray) -> float:
+        """Compute the similarity between two SimHash fingerprints.
+
+        Similarity is computed as 1 - (Hamming distance / hash_bits).
+
+        Args:
+            hash1: First fingerprint array.
+            hash2: Second fingerprint array.
+
+        Returns:
+            Similarity score between 0.0 and 1.0.
+        """
+        distance = SimHash.hamming_distance(hash1, hash2)
+        hash_bits = len(hash1)
+        return 1.0 - (distance / hash_bits)
+
+
 class DeduplicationPromptAugmenter(BasePromptAugmenter):
     """A prompt augmenter that deduplicates the generated prompt.
 
     A prompt with repeated sentences makes the LLM model harder to focus on the
     correct information and wastes token budget. This class focuses on exact or
-    near-duplications at the sentence level using MinHash-based similarity.
+    near-duplications at the sentence level.
 
-    Supports three algorithms:
+    Supports four algorithms:
     - **minhash**: Uses C-MinHash with CMinHashDeduplicator for exact deduplication
     - **minhash_lsh**: Uses R-MinHash with LSH (Locality-Sensitive Hashing) for
       efficient near-duplicate detection at scale
     - **bloomfilter**: Uses Bloom Filter for fast probabilistic exact deduplication
+    - **simhash**: Uses custom numpy-based SimHash for near-duplicate detection
 
     We do not use semantic deduplication. Semantic similarity, in usual cases,
     helps strengthen the context in the prompt and helps the model more likely
@@ -181,6 +276,12 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             dedup = Bloom(
                 expected_items=algo_config.expected_items,
                 false_positive_rate=algo_config.false_positive_rate,
+            )
+        elif algo_name == "simhash":
+            algo_config = SimHashAlgoConfig(**algo_args)
+            dedup = SimHash(
+                hash_bits=algo_config.hash_bits,
+                seed=algo_config.seed,
             )
         else:
             raise ValueError(f"Unsupported algorithm: {algo_name}")
@@ -263,6 +364,46 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             deduped_sentences.append(sent)
         return deduped_sentences
 
+    def _deduplicate_simhash(self, sentences: list[str]) -> list[str]:
+        """Deduplicate sentences using SimHash.
+
+        Computes a SimHash fingerprint for each sentence and compares fingerprints
+        using Hamming distance. Sentences with similarity >= threshold are considered
+        duplicates and removed.
+        """
+        self._dedup = SimHash(
+            hash_bits=self._algo_config.hash_bits,
+            seed=self._algo_config.seed,
+        )
+        deduped_sentences = []
+        fingerprints = []
+        threshold = self._algo_config.threshold
+
+        for sent in sentences:
+            tokens = re.findall(r"\b\w+\b", sent.lower())
+            if not tokens:
+                deduped_sentences.append(sent)
+                fingerprints.append(None)
+                continue
+
+            fp = self._dedup.compute_hash(sent)
+            is_duplicate = False
+
+            # Compare with all existing fingerprints
+            for existing_fp in fingerprints:
+                if existing_fp is None:
+                    continue
+                sim = SimHash.similarity(fp, existing_fp)
+                if sim >= threshold:
+                    is_duplicate = True
+                    break
+
+            if not is_duplicate:
+                deduped_sentences.append(sent)
+                fingerprints.append(fp)
+
+        return deduped_sentences
+
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         if not message.query:
             return message
@@ -275,6 +416,8 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             deduped_sentences = self._deduplicate_minhash_lsh(sentences)
         elif self._algo_config.algorithm_name == "bloomfilter":
             deduped_sentences = self._deduplicate_bloomfilter(sentences)
+        elif self._algo_config.algorithm_name == "simhash":
+            deduped_sentences = self._deduplicate_simhash(sentences)
         else:
             raise ValueError(
                 f"Unsupported algorithm: {self._algo_config.algorithm_name}"
