@@ -81,9 +81,9 @@ class TestDeduplicationPromptAugmenter:
                 algo_args={"algorithm_name": "unsupported_algo"}
             )
 
-    def test_constructor_simhash_not_implemented(self):
-        """Test that simhash algorithm raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="not implemented yet"):
+    def test_constructor_simhash_not_supported(self):
+        """Test that simhash algorithm raises ValueError (not supported)."""
+        with pytest.raises(ValueError, match="Unsupported algorithm"):
             DeduplicationPromptAugmenter(
                 algo_args={"algorithm_name": "simhash", "threshold": 0.8}
             )
@@ -517,3 +517,196 @@ class TestDeduplicationPromptAugmenter:
         result = aug(message)
         # After first pass, duplicates are removed; second pass should be a no-op
         assert result.query.count("Test") == 1
+
+    # --- Bloom Filter Algorithm Tests ---
+
+    @pytest.fixture
+    def bloom_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "bloomfilter",
+                "expected_items": 100,
+                "false_positive_rate": 0.01,
+            }
+        )
+
+    @pytest.fixture
+    def bloom_default_augmenter(self):
+        return DeduplicationPromptAugmenter(algo_args={"algorithm_name": "bloomfilter"})
+
+    def test_constructor_bloomfilter_defaults(self):
+        """Test that bloomfilter constructor uses correct defaults."""
+        aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "bloomfilter"})
+        assert aug._algo_config.algorithm_name == "bloomfilter"
+        assert aug._algo_config.expected_items == 1000
+        assert aug._algo_config.false_positive_rate == 0.01
+
+    def test_constructor_bloomfilter_custom_params(self):
+        """Test bloomfilter constructor with custom parameters."""
+        aug = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "bloomfilter",
+                "expected_items": 500,
+                "false_positive_rate": 0.001,
+            }
+        )
+        assert aug._algo_config.algorithm_name == "bloomfilter"
+        assert aug._algo_config.expected_items == 500
+        assert aug._algo_config.false_positive_rate == 0.001
+
+    def test_constructor_bloomfilter_invalid_expected_items_zero(self):
+        """Test that expected_items=0 raises ValueError for bloomfilter."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "bloomfilter",
+                    "expected_items": 0,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_bloomfilter_invalid_expected_items_negative(self):
+        """Test that expected_items<0 raises ValueError for bloomfilter."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "bloomfilter",
+                    "expected_items": -100,
+                    "false_positive_rate": 0.01,
+                }
+            )
+
+    def test_constructor_bloomfilter_invalid_fpr_boundary_zero(self):
+        """Test that false_positive_rate=0.0 raises ValueError for bloomfilter."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "bloomfilter",
+                    "expected_items": 100,
+                    "false_positive_rate": 0.0,
+                }
+            )
+
+    def test_constructor_bloomfilter_invalid_fpr_boundary_one(self):
+        """Test that false_positive_rate=1.0 raises ValueError for bloomfilter."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "bloomfilter",
+                    "expected_items": 100,
+                    "false_positive_rate": 1.0,
+                }
+            )
+
+    def test_constructor_bloomfilter_invalid_fpr_too_high(self):
+        """Test that false_positive_rate>1.0 raises ValueError for bloomfilter."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "bloomfilter",
+                    "expected_items": 100,
+                    "false_positive_rate": 1.5,
+                }
+            )
+
+    def test_augment_bloomfilter_empty_query(self, bloom_augmenter):
+        """Test that bloomfilter with empty query returns message unchanged."""
+        message = AgentMessage(query="")
+        result = bloom_augmenter(message)
+        assert result.query == ""
+
+    def test_augment_bloomfilter_exact_duplicates(self, bloom_augmenter):
+        """Test bloomfilter deduplication of exact duplicate sentences."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query != query
+        # Should still contain the unique parts
+        assert "This is a test" in result.query
+
+    def test_augment_bloomfilter_multiple_exact_duplicates(self, bloom_augmenter):
+        """Test bloomfilter deduplication of multiple exact duplicate sentences."""
+        query = "Same sentence. Same sentence. Same sentence. Different one."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        # "Same sentence." should appear only once
+        assert result.query.count("Same sentence") == 1
+        assert "Different one" in result.query
+
+    def test_augment_bloomfilter_no_duplicates(self, bloom_augmenter):
+        """Test that bloomfilter preserves text with no duplicates."""
+        query = "The sky is blue. The grass is green. The sun is bright."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        # All sentences should be preserved
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_bloomfilter_unique_sentences_preserved(self, bloom_augmenter):
+        """Test that bloomfilter preserves all unique sentences."""
+        query = "Apple is a fruit. Carrot is a vegetable. Dog is an animal."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        assert "Apple is a fruit" in result.query
+        assert "Carrot is a vegetable" in result.query
+        assert "Dog is an animal" in result.query
+
+    def test_augment_bloomfilter_single_sentence(self, bloom_augmenter):
+        """Test bloomfilter with a single sentence."""
+        query = "This is a single sentence."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        assert result.query == query
+
+    def test_augment_bloomfilter_single_word(self, bloom_augmenter):
+        """Test bloomfilter with a single word."""
+        query = "Hello"
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        assert result.query == query
+
+    def test_augment_bloomfilter_multiple_exclamation(self, bloom_augmenter):
+        """Test bloomfilter with multiple exclamation marks."""
+        query = "Wow! Wow! Amazing!"
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        assert result.query.count("Wow") == 1
+        assert "Amazing" in result.query
+
+    def test_augment_bloomfilter_mixed_terminators(self, bloom_augmenter):
+        """Test bloomfilter with mixed sentence terminators."""
+        query = "The sky is blue. The grass is green? The sun is bright!"
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_bloomfilter_with_loop(self, bloom_augmenter):
+        """Test bloomfilter with loop configuration."""
+        aug_with_loop = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "bloomfilter",
+                "expected_items": 100,
+                "false_positive_rate": 0.01,
+            },
+            loop=2,
+        )
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = aug_with_loop(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query
+
+    def test_augment_bloomfilter_case_sensitive(self, bloom_augmenter):
+        """Test that bloomfilter is case-sensitive (unlike minhash)."""
+        query = "Hello world. hello world. Different."
+        message = AgentMessage(query=query)
+        result = bloom_augmenter(message)
+        # "Hello world." and "hello world." are different due to case
+        assert "Hello world" in result.query
+        assert "hello world" in result.query
+        assert "Different" in result.query

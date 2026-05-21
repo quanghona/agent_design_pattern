@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 class BaseAlgoConfig(BaseModel):
     """Base configuration for deduplication algorithms."""
 
-    algorithm_name: Literal["minhash", "minhash_lsh", "simhash"] = Field(
+    algorithm_name: Literal["minhash", "minhash_lsh", "simhash", "bloomfilter"] = Field(
         ..., description="Name of the algorithm"
     )
 
@@ -16,7 +16,9 @@ class MinHashAlgoConfig(BaseAlgoConfig):
     Uses the **rensa** library for C-MinHash deduplication.
     """
 
-    algorithm_name: Literal["minhash", "minhash_lsh", "simhash"] = "minhash"
+    algorithm_name: Literal["minhash", "minhash_lsh", "simhash", "bloomfilter"] = (
+        "minhash"
+    )
     threshold: float = Field(
         default=0.9,
         ge=0.0,
@@ -41,7 +43,9 @@ class MinHashLSHAlgoConfig(BaseAlgoConfig):
     Uses the **rensa** library for R-MinHash with Locality-Sensitive Hashing.
     """
 
-    algorithm_name: Literal["minhash", "minhash_lsh", "simhash"] = "minhash_lsh"
+    algorithm_name: Literal["minhash", "minhash_lsh", "simhash", "bloomfilter"] = (
+        "minhash_lsh"
+    )
     threshold: float = Field(
         default=0.9,
         ge=0.0,
@@ -62,4 +66,26 @@ class MinHashLSHAlgoConfig(BaseAlgoConfig):
         default=42,
         ge=0,
         description="Random seed for reproducibility",
+    )
+
+
+class BloomAlgoConfig(BaseAlgoConfig):
+    """Configuration for Bloom Filter based deduplication.
+
+    Uses the **rbloom** library for Bloom Filter based exact deduplication.
+    """
+
+    algorithm_name: Literal["minhash", "minhash_lsh", "simhash", "bloomfilter"] = (
+        "bloomfilter"
+    )
+    expected_items: int = Field(
+        default=1000,
+        gt=0,
+        description="Expected number of items to add to the bloom filter",
+    )
+    false_positive_rate: float = Field(
+        default=0.01,
+        gt=0.0,
+        lt=1.0,
+        description="Desired false positive rate (0.0 to 1.0)",
     )

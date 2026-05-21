@@ -11,9 +11,14 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from pydantic import Field, PrivateAttr, field_validator
+from rbloom import Bloom
 from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH
 
-from aap_core.dedup_config import MinHashAlgoConfig, MinHashLSHAlgoConfig
+from aap_core.dedup_config import (
+    BloomAlgoConfig,
+    MinHashAlgoConfig,
+    MinHashLSHAlgoConfig,
+)
 
 from .policy import BasePolicy
 
@@ -140,6 +145,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
     - **minhash**: Uses C-MinHash with CMinHashDeduplicator for exact deduplication
     - **minhash_lsh**: Uses R-MinHash with LSH (Locality-Sensitive Hashing) for
       efficient near-duplicate detection at scale
+    - **bloomfilter**: Uses Bloom Filter for fast probabilistic exact deduplication
 
     We do not use semantic deduplication. Semantic similarity, in usual cases,
     helps strengthen the context in the prompt and helps the model more likely
@@ -170,9 +176,11 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 num_perm=algo_config.num_perm,
                 num_bands=algo_config.num_bands,
             )
-        elif algo_name == "simhash":
-            raise NotImplementedError(
-                "SimHash algorithm is not implemented yet. Only 'minhash' and 'minhash_lsh' are supported."
+        elif algo_name == "bloomfilter":
+            algo_config = BloomAlgoConfig(**algo_args)
+            dedup = Bloom(
+                expected_items=algo_config.expected_items,
+                false_positive_rate=algo_config.false_positive_rate,
             )
         else:
             raise ValueError(f"Unsupported algorithm: {algo_name}")
@@ -238,16 +246,39 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             deduped_sentences.append(sent)
         return deduped_sentences
 
+    def _deduplicate_bloomfilter(self, sentences: list[str]) -> list[str]:
+        """Deduplicate sentences using Bloom Filter.
+
+        Uses rbloom Bloom Filter for exact deduplication based on sentence hashing.
+        Clears the bloom filter once before processing all sentences.
+        """
+        self._dedup.clear()
+        deduped_sentences = []
+        for sent in sentences:
+            if sent in self._dedup:
+                # Sentence already in bloom filter, skip it
+                continue
+            # Not a duplicate, add it
+            self._dedup.add(sent)
+            deduped_sentences.append(sent)
+        return deduped_sentences
+
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
         if not message.query:
             return message
 
         sentences = nltk.sent_tokenize(message.query.strip())
 
-        if self._algo_config.algorithm_name == "minhash_lsh":
-            deduped_sentences = self._deduplicate_minhash_lsh(sentences)
-        else:
+        if self._algo_config.algorithm_name == "minhash":
             deduped_sentences = self._deduplicate_minhash(sentences)
+        elif self._algo_config.algorithm_name == "minhash_lsh":
+            deduped_sentences = self._deduplicate_minhash_lsh(sentences)
+        elif self._algo_config.algorithm_name == "bloomfilter":
+            deduped_sentences = self._deduplicate_bloomfilter(sentences)
+        else:
+            raise ValueError(
+                f"Unsupported algorithm: {self._algo_config.algorithm_name}"
+            )
 
         message.query = " ".join(deduped_sentences)
         return message
@@ -1241,6 +1272,7 @@ class PromptOptimizationEnv(gym.Env):
             # If augmentation fails, keep the current prompt
             warnings.warn(f"Augmenter {action} failed: {e}")
 
+        # TODO: penalize with exact duplication
         reward = self._reward_model(self._current_prompt)
         self._current_embedding = self._embedding_model(self._current_prompt).astype(
             np.float32
