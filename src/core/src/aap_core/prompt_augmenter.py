@@ -154,7 +154,7 @@ class SimHash(BaseModel):
         default=64, gt=0, description="Number of bits in the fingerprint"
     )
     seed: int = Field(default=42, ge=0, description="Random seed for reproducibility")
-    _rng: Any = PrivateAttr(default=None)
+    _rng: np.random.RandomState = PrivateAttr()
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -287,7 +287,6 @@ class LSHBloom(BaseModel):
         lt=1.0,
         description="Desired false positive rate for each Bloom filter (0.0 to 1.0)",
     )
-    seed: int = Field(default=42, ge=0, description="Random seed for reproducibility")
 
     _band_size: int = PrivateAttr(default=0)
     _bloom_filters: list[Bloom] = PrivateAttr(default_factory=list)
@@ -433,7 +432,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
     to generate the right answer.
     """
 
-    _dedup: Any = PrivateAttr(default=None)
+    _dedup: Any = PrivateAttr()
     _algo_config: Any = PrivateAttr()
 
     def __init__(
@@ -477,7 +476,6 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 num_bands=algo_config.num_bands,
                 expected_items=algo_config.expected_items,
                 false_positive_rate=algo_config.false_positive_rate,
-                seed=algo_config.seed,
             )
         else:
             raise ValueError(f"Unsupported algorithm: {algo_name}")
@@ -615,7 +613,6 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             num_bands=self._algo_config.num_bands,
             expected_items=self._algo_config.expected_items,
             false_positive_rate=self._algo_config.false_positive_rate,
-            seed=self._algo_config.seed,
         )
         deduped_sentences = []
         for sent in sentences:

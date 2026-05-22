@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-
 from aap_core.prompt_augmenter import (
     BasePromptAugmenter,
     IdentityPromptAugmenter,

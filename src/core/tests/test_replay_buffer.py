@@ -4,7 +4,6 @@ import random
 
 import numpy as np
 import pytest
-
 from aap_core.policy_trainer import (
     PrioritizedReplayBuffer,
     ReplayBufferEntry,

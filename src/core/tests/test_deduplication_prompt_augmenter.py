@@ -1,5 +1,4 @@
 import pytest
-
 from aap_core.prompt_augmenter import DeduplicationPromptAugmenter
 from aap_core.types import AgentMessage
 

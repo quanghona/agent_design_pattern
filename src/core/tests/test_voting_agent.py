@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from a2a.types import AgentCard
 from aap_core.agent import BaseAgent
 from aap_core.orchestration import VotingAgent
