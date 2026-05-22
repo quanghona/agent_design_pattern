@@ -40,6 +40,7 @@ Repository = "https://github.com/quanghona/agent_design_pattern.git"
 dev = [
     "pytest>=9.0.3",
     "ruff>=0.14.0",
+    "pytest-cov>=7.1.0",
 ]
 lint = [
     "ruff==0.14.0",
