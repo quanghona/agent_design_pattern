@@ -719,7 +719,6 @@ class TestDeduplicationPromptAugmenter:
             algo_args={
                 "algorithm_name": "simhash",
                 "hash_bits": 64,
-                "seed": 42,
                 "threshold": 0.8,
             }
         )
@@ -730,7 +729,6 @@ class TestDeduplicationPromptAugmenter:
             algo_args={
                 "algorithm_name": "simhash",
                 "hash_bits": 64,
-                "seed": 42,
                 "threshold": 0.3,
             }
         )
@@ -741,7 +739,6 @@ class TestDeduplicationPromptAugmenter:
             algo_args={
                 "algorithm_name": "simhash",
                 "hash_bits": 128,
-                "seed": 42,
                 "threshold": 0.8,
             }
         )
@@ -751,7 +748,6 @@ class TestDeduplicationPromptAugmenter:
         aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "simhash"})
         assert aug._algo_config.algorithm_name == "simhash"
         assert aug._algo_config.hash_bits == 64
-        assert aug._algo_config.seed == 42
         assert aug._algo_config.threshold == 0.8
 
     def test_constructor_simhash_custom_params(self):
@@ -760,13 +756,11 @@ class TestDeduplicationPromptAugmenter:
             algo_args={
                 "algorithm_name": "simhash",
                 "hash_bits": 128,
-                "seed": 123,
                 "threshold": 0.7,
             }
         )
         assert aug._algo_config.algorithm_name == "simhash"
         assert aug._algo_config.hash_bits == 128
-        assert aug._algo_config.seed == 123
         assert aug._algo_config.threshold == 0.7
 
     def test_constructor_simhash_invalid_hash_bits_zero(self):
@@ -801,7 +795,6 @@ class TestDeduplicationPromptAugmenter:
                     "algorithm_name": "simhash",
                     "threshold": 1.5,
                     "hash_bits": 64,
-                    "seed": 42,
                 }
             )
 
@@ -917,7 +910,6 @@ class TestDeduplicationPromptAugmenter:
             algo_args={
                 "algorithm_name": "simhash",
                 "hash_bits": 64,
-                "seed": 42,
                 "threshold": 0.8,
             },
             loop=2,
@@ -1289,3 +1281,257 @@ class TestDeduplicationPromptAugmenter:
         # The duplicate "Hello world." should be removed
         assert result.query.count("Hello world") == 1
         assert "This is a test" in result.query
+
+    # --- Suffix Array Algorithm Tests ---
+
+    @pytest.fixture
+    def suffix_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "suffix_array",
+                "min_length": 5,
+                "max_length": 100,
+                "seed": 42,
+            }
+        )
+
+    @pytest.fixture
+    def suffix_default_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={"algorithm_name": "suffix_array"}
+        )
+
+    @pytest.fixture
+    def suffix_low_min_length_augmenter(self):
+        return DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "suffix_array",
+                "min_length": 3,
+                "max_length": 50,
+                "seed": 42,
+            }
+        )
+
+    def test_constructor_suffix_array_defaults(self):
+        """Test that suffix_array constructor uses correct defaults."""
+        aug = DeduplicationPromptAugmenter(algo_args={"algorithm_name": "suffix_array"})
+        assert aug._algo_config.algorithm_name == "suffix_array"
+        assert aug._algo_config.min_length == 50
+        assert aug._algo_config.max_length == 1000
+
+    def test_constructor_suffix_array_custom_params(self):
+        """Test suffix_array constructor with custom parameters."""
+        aug = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "suffix_array",
+                "min_length": 10,
+                "max_length": 200,
+            }
+        )
+        assert aug._algo_config.algorithm_name == "suffix_array"
+        assert aug._algo_config.min_length == 10
+        assert aug._algo_config.max_length == 200
+
+    def test_constructor_suffix_array_invalid_min_length_zero(self):
+        """Test that min_length=0 raises ValueError for suffix_array."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "suffix_array",
+                    "min_length": 0,
+                    "max_length": 100,
+                    "seed": 42,
+                }
+            )
+
+    def test_constructor_suffix_array_invalid_min_length_negative(self):
+        """Test that min_length<0 raises ValueError for suffix_array."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "suffix_array",
+                    "min_length": -10,
+                    "max_length": 100,
+                    "seed": 42,
+                }
+            )
+
+    def test_constructor_suffix_array_invalid_max_length_zero(self):
+        """Test that max_length=0 raises ValueError for suffix_array."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "suffix_array",
+                    "min_length": 5,
+                    "max_length": 0,
+                    "seed": 42,
+                }
+            )
+
+    def test_constructor_suffix_array_invalid_max_length_negative(self):
+        """Test that max_length<0 raises ValueError for suffix_array."""
+        with pytest.raises(ValueError):
+            DeduplicationPromptAugmenter(
+                algo_args={
+                    "algorithm_name": "suffix_array",
+                    "min_length": 5,
+                    "max_length": -100,
+                    "seed": 42,
+                }
+            )
+
+    def test_constructor_suffix_array_invalid_type(self):
+        """Test that invalid type raises ValidationError for suffix_array."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            DeduplicationPromptAugmenter(
+                algo_args={"algorithm_name": "suffix_array", "min_length": [5]}
+            )
+
+    def test_augment_suffix_array_empty_query(self, suffix_augmenter):
+        """Test that suffix_array with empty query returns message unchanged."""
+        message = AgentMessage(query="")
+        result = suffix_augmenter(message)
+        assert result.query == ""
+
+    def test_augment_suffix_array_exact_duplicates(self, suffix_augmenter):
+        """Test suffix_array deduplication of exact duplicate sentences."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query != query
+        # Should still contain the unique parts
+        assert "This is a test" in result.query
+
+    def test_augment_suffix_array_multiple_exact_duplicates(self, suffix_augmenter):
+        """Test suffix_array deduplication of multiple exact duplicate sentences."""
+        query = "Same sentence. Same sentence. Same sentence. Different one."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # "Same sentence." should appear only once
+        assert result.query.count("Same sentence") == 1
+        assert "Different one" in result.query
+
+    def test_augment_suffix_array_no_duplicates(self, suffix_augmenter):
+        """Test that suffix_array preserves text with no duplicates."""
+        query = "The sky is blue. The grass is green. The sun is bright."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # All sentences should be preserved
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_suffix_array_unique_sentences_preserved(self, suffix_augmenter):
+        """Test that suffix_array preserves all unique sentences."""
+        query = "Apple is a fruit. Carrot is a vegetable. Dog is an animal."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        assert "Apple is a fruit" in result.query
+        assert "Carrot is a vegetable" in result.query
+        assert "Dog is an animal" in result.query
+
+    def test_augment_suffix_array_single_sentence(self, suffix_augmenter):
+        """Test suffix_array with a single sentence."""
+        query = "This is a single sentence."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        assert result.query == query
+
+    def test_augment_suffix_array_single_word(self, suffix_augmenter):
+        """Test suffix_array with a single word."""
+        query = "Hello"
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        assert result.query == query
+
+    def test_augment_suffix_array_multiple_exclamation(self, suffix_augmenter):
+        """Test suffix_array with multiple exclamation marks."""
+        query = "Wow! Wow! Amazing!"
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        assert result.query.count("Wow") == 1
+        assert "Amazing" in result.query
+
+    def test_augment_suffix_array_mixed_terminators(self, suffix_augmenter):
+        """Test suffix_array with mixed sentence terminators."""
+        query = "The sky is blue. The grass is green? The sun is bright!"
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        assert "The sky is blue" in result.query
+        assert "The grass is green" in result.query
+        assert "The sun is bright" in result.query
+
+    def test_augment_suffix_array_with_loop(self, suffix_augmenter):
+        """Test suffix_array with loop configuration."""
+        aug_with_loop = DeduplicationPromptAugmenter(
+            algo_args={
+                "algorithm_name": "suffix_array",
+                "min_length": 5,
+                "max_length": 100,
+                "seed": 42,
+            },
+            loop=2,
+        )
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = aug_with_loop(message)
+        # The duplicate "Hello world." should be removed
+        assert result.query.count("Hello world") == 1
+        assert "This is a test" in result.query
+
+    def test_augment_suffix_array_case_insensitive(self, suffix_augmenter):
+        """Test that suffix_array is case-insensitive (tokens are lowercased)."""
+        query = "Hello world. hello world. Different."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # "Hello world." and "hello world." are similar due to case-insensitive tokenization
+        # One should be removed as a duplicate
+        assert result.query.count("world") == 1
+        assert "Different" in result.query
+
+    def test_augment_suffix_array_default_augmenter(self, suffix_default_augmenter):
+        """Test suffix_array with default parameters."""
+        query = "Hello world. Hello world. This is a test."
+        message = AgentMessage(query=query)
+        result = suffix_default_augmenter(message)
+        # With default min_length=50, short duplicates may not be detected
+        # Just verify the result is valid
+        assert isinstance(result.query, str)
+        assert len(result.query) > 0
+
+    def test_augment_suffix_array_low_min_length(self, suffix_low_min_length_augmenter):
+        """Test suffix_array with low min_length threshold."""
+        query = "Hi. Hi. Hi. This is unique."
+        message = AgentMessage(query=query)
+        result = suffix_low_min_length_augmenter(message)
+        # With min_length=3, "Hi" should be detected as duplicate
+        assert result.query.count("Hi") == 1
+        assert "This is unique" in result.query
+
+    def test_augment_suffix_array_long_duplicate_substring(self, suffix_augmenter):
+        """Test suffix_array with long duplicate substrings."""
+        query = (
+            "This is a very long sentence that is repeated. "
+            "This is a very long sentence that is repeated. "
+            "This is a unique sentence."
+        )
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # The long duplicate should be removed
+        assert result.query.count("very long sentence") == 1
+        assert "This is a unique sentence" in result.query
+
+    def test_augment_suffix_array_preserves_order(self, suffix_augmenter):
+        """Test that suffix_array preserves the order of unique sentences."""
+        query = "First sentence. Second sentence. Third sentence. First sentence."
+        message = AgentMessage(query=query)
+        result = suffix_augmenter(message)
+        # First sentence should appear only once, at the beginning
+        sentences = result.query.split(".")
+        sentences = [s.strip() for s in sentences if s.strip()]
+        assert sentences[0] == "First sentence"
+        assert "Second sentence" in result.query
+        assert "Third sentence" in result.query

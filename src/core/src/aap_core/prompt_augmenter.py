@@ -3,23 +3,27 @@ import re
 import warnings
 from collections.abc import Callable, Sequence
 from importlib import resources as importlib_resources
-from typing import Any, ClassVar, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
 import gymnasium as gym
 import nltk
 import numpy as np
 import torch
 from gymnasium import spaces
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 from rbloom import Bloom
 from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH
 
-from aap_core.dedup_config import (
+from aap_core.dedup import (
     BloomAlgoConfig,
+    LSHBloom,
     LSHBloomAlgoConfig,
     MinHashAlgoConfig,
     MinHashLSHAlgoConfig,
+    SimHash,
     SimHashAlgoConfig,
+    SuffixAlgoConfig,
+    SuffixArray,
 )
 
 from .policy import BasePolicy
@@ -136,281 +140,6 @@ class MetaPromptAugmenter(BasePromptAugmenter):
         return message
 
 
-class SimHash(BaseModel):
-    """A custom SimHash implementation using numpy.
-
-    SimHash produces a fingerprint for each document/sentence, and near-duplicates
-    have similar fingerprints (low Hamming distance). This implementation does not
-    require any external dependencies beyond numpy.
-
-    Algorithm:
-    1. For each token, compute a hash to get a bit vector
-    2. Use the hash to create a weighted contribution
-    3. Sum all weighted contributions to get a signature vector
-    4. Take the sign of each element to get the final fingerprint
-    """
-
-    hash_bits: Literal[64, 128] = Field(
-        default=64, gt=0, description="Number of bits in the fingerprint"
-    )
-    seed: int = Field(default=42, ge=0, description="Random seed for reproducibility")
-    _rng: np.random.RandomState = PrivateAttr()
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    def model_post_init(self, __context: Any) -> None:
-        """Initialize the random number generator after model initialization."""
-        self._rng = np.random.RandomState(self.seed)
-
-    @staticmethod
-    def _token_hash(
-        token: str, hash_bits: int, rng: np.random.RandomState
-    ) -> np.ndarray:
-        """Compute a hash bit vector for a token.
-
-        Uses the random number generator to create a random bit vector
-        based on the token's hash value.
-        """
-        # Use Python's built-in hash combined with position for stability
-        h = hash(token)
-        bits = np.zeros(hash_bits, dtype=np.int8)
-        for i in range(hash_bits):
-            # Use different bits of the hash for each position
-            bits[i] = 1 if (h >> (i % 64)) & 1 else -1
-        return bits
-
-    def compute_hash(self, text: str) -> np.ndarray:
-        """Compute the SimHash fingerprint for a text.
-
-        Args:
-            text: The input text to hash.
-
-        Returns:
-            A numpy array of int8 values (-1 or 1) representing the fingerprint.
-        """
-        tokens = re.findall(r"\b\w+\b", text.lower())
-        if not tokens:
-            return np.zeros(self.hash_bits, dtype=np.int8)
-
-        # Initialize signature vector
-        signature = np.zeros(self.hash_bits, dtype=np.float64)
-
-        for token in tokens:
-            # Get hash bits for this token
-            token_hash = self._token_hash(token, self.hash_bits, self._rng)
-            # Add weighted contribution to signature
-            signature += token_hash.astype(np.float64)
-
-        # Convert to fingerprint: +1 if positive, -1 if negative
-        fingerprint = np.sign(signature).astype(np.int8)
-        # Handle zeros (treat as +1)
-        fingerprint[fingerprint == 0] = 1
-        return fingerprint
-
-    @staticmethod
-    def hamming_distance(hash1: np.ndarray, hash2: np.ndarray) -> int:
-        """Compute the Hamming distance between two SimHash fingerprints.
-
-        Args:
-            hash1: First fingerprint array.
-            hash2: Second fingerprint array.
-
-        Returns:
-            The Hamming distance (number of differing bits).
-        """
-        return int(np.sum(hash1 != hash2))
-
-    @staticmethod
-    def similarity(hash1: np.ndarray, hash2: np.ndarray) -> float:
-        """Compute the similarity between two SimHash fingerprints.
-
-        Similarity is computed as 1 - (Hamming distance / hash_bits).
-
-        Args:
-            hash1: First fingerprint array.
-            hash2: Second fingerprint array.
-
-        Returns:
-            Similarity score between 0.0 and 1.0.
-        """
-        distance = SimHash.hamming_distance(hash1, hash2)
-        hash_bits = len(hash1)
-        return 1.0 - (distance / hash_bits)
-
-
-class LSHBloom(BaseModel):
-    """LSH-Bloom Filter implementation for space-efficient near-duplicate detection.
-
-    This implementation combines MinHash with Locality-Sensitive Hashing (LSH)
-    where each band's hash table is replaced by a Bloom filter. This approach
-    drastically reduces space usage compared to traditional LSH while maintaining
-    good near-duplicate detection capabilities.
-
-    Inspired by the LSHBloom algorithm from https://arxiv.org/abs/2411.04257
-    and the datasketch implementation.
-
-    Each band's Bloom filter stores ``sum(hashvalues) % MersennePrime`` instead of
-    all individual hash values, making it suitable for large-scale deduplication
-    scenarios with millions or billions of documents.
-
-    Attributes:
-        num_bands: Number of bands in the LSH index.
-        band_size: Number of hash values per band (num_perm / num_bands).
-        bloom_filters: List of Bloom filters, one per band.
-        num_perm: Number of permutations for MinHash.
-        seed: Random seed for reproducibility.
-        threshold: Similarity threshold for duplicate detection.
-    """
-
-    _MERSIANE_PRIME: ClassVar[int] = (1 << 61) - 1  # Mersenne prime 2^61 - 1
-
-    threshold: float = Field(
-        default=0.9,
-        ge=0.0,
-        le=1.0,
-        description="Similarity threshold for duplicate detection (0.0 to 1.0)",
-    )
-    num_perm: int = Field(
-        default=128, gt=0, description="Number of permutations for MinHash"
-    )
-    num_bands: int = Field(
-        default=16, gt=0, description="Number of bands for LSH index"
-    )
-    expected_items: int = Field(
-        default=10,
-        gt=0,
-        description="Expected number of items to add to each Bloom filter",
-    )
-    false_positive_rate: float = Field(
-        default=0.01,
-        gt=0.0,
-        lt=1.0,
-        description="Desired false positive rate for each Bloom filter (0.0 to 1.0)",
-    )
-
-    _band_size: int = PrivateAttr(default=0)
-    _bloom_filters: list[Bloom] = PrivateAttr(default_factory=list)
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    @field_validator("num_bands")
-    @classmethod
-    def validate_num_bands(cls, v: int, info: Any) -> int:
-        """Validate that num_bands is less than num_perm."""
-        num_perm = info.data.get("num_perm", 128)
-        if v > num_perm:
-            raise ValueError("num_bands cannot be greater than num_perm")
-        return v
-
-    def model_post_init(self, __context: Any) -> None:
-        """Initialize derived attributes and Bloom filters after model initialization."""
-        self._band_size = self.num_perm // self.num_bands
-        self._bloom_filters = [
-            Bloom(
-                expected_items=self.expected_items,
-                false_positive_rate=self.false_positive_rate,
-            )
-            for _ in range(self.num_bands)
-        ]
-
-    def _compute_band_hash(self, hashvalues: list[int]) -> int:
-        """Compute a single hash value for a band using sum of hashvalues.
-
-        This is the key space optimization: instead of storing all hash values
-        in the Bloom filter, we store a single hash of their sum.
-
-        Args:
-            hashvalues: List of hash values for a single band.
-
-        Returns:
-            A single hash value to store in the Bloom filter.
-        """
-        return sum(hashvalues) % self._MERSIANE_PRIME
-
-    def insert(self, minhash_key: str, mh: CMinHash | RMinHash) -> None:
-        """Insert a MinHash into the LSH-Bloom index.
-
-        Args:
-            minhash_key: A unique key for the item (e.g., sentence index).
-                        This is kept for API compatibility but not used in storage.
-            mh: A MinHash object (CMinHash or RMinHash) with computed hash values.
-        """
-        # Get the hash values from the MinHash
-        hash_values = self._get_minhash_values(mh)
-
-        for band_idx in range(self.num_bands):
-            start = band_idx * self._band_size
-            end = start + self._band_size
-            band_values = hash_values[start:end]
-            band_hash = self._compute_band_hash(band_values)
-            # Store just the band hash, matching datasketch implementation
-            self._bloom_filters[band_idx].add(band_hash)
-
-    def query(self, mh: CMinHash | RMinHash) -> bool:
-        """Query whether a MinHash has a potential match in the index.
-
-        Args:
-            mh: A MinHash object (CMinHash or RMinHash) with computed hash values.
-
-        Returns:
-            True if there's a potential match (possible duplicate), False otherwise.
-        """
-        hash_values = self._get_minhash_values(mh)
-
-        for band_idx in range(self.num_bands):
-            start = band_idx * self._band_size
-            end = start + self._band_size
-            band_values = hash_values[start:end]
-            band_hash = self._compute_band_hash(band_values)
-
-            # Check if band hash exists in the Bloom filter
-            # Use 'in' operator since rbloom.Bloom uses __contains__
-            if band_hash not in self._bloom_filters[band_idx]:
-                return False
-
-        # All bands matched - potential duplicate
-        return True
-
-    def clear(self) -> None:
-        """Clear all Bloom filters in the index."""
-        for bloom_filter in self._bloom_filters:
-            bloom_filter.clear()
-
-    @staticmethod
-    def _get_minhash_values(mh) -> list[int]:
-        """Extract hash values from a MinHash object.
-
-        This method extracts the hash values from either CMinHash or RMinHash
-        objects by using their internal hash representation.
-
-        Args:
-            mh: A MinHash object (CMinHash or RMinHash).
-
-        Returns:
-            List of integer hash values.
-        """
-        # For rensa's CMinHash and RMinHash, use the digest() method
-        if hasattr(mh, "digest") and callable(mh.digest):
-            return list(mh.digest())
-        elif hasattr(mh, "h"):
-            # CMinHash has 'h' attribute with hash values
-            val = mh.h
-            if hasattr(val, "tolist"):
-                return val.tolist()
-            return list(val)
-        elif hasattr(mh, "hash_values"):
-            # Some MinHash implementations use 'hash_values'
-            val = mh.hash_values
-            if hasattr(val, "tolist"):
-                return val.tolist()
-            return list(val)
-        else:
-            raise ValueError(
-                "Unable to extract hash values from MinHash object. "
-                "Expected CMinHash or RMinHash from rensa library."
-            )
-
-
 class DeduplicationPromptAugmenter(BasePromptAugmenter):
     """A prompt augmenter that deduplicates the generated prompt.
 
@@ -418,7 +147,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
     correct information and wastes token budget. This class focuses on exact or
     near-duplications at the sentence level.
 
-    Supports five algorithms:
+    Supports following algorithms:
     - **minhash**: Uses C-MinHash with CMinHashDeduplicator for exact deduplication
     - **minhash_lsh**: Uses R-MinHash with LSH (Locality-Sensitive Hashing) for
       efficient near-duplicate detection at scale
@@ -426,6 +155,9 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
     - **simhash**: Uses custom numpy-based SimHash for near-duplicate detection
     - **lsh_bloom**: Uses MinHash with LSH-Bloom Filter for space-efficient
       near-duplicate detection at very large scale
+    - **suffix_array**: Uses Suffix Array with LCP array for exact substring
+      deduplication. Inspired by Google's deduplicate-text-datasets and
+      Chenghao Mou's text-dedup.
 
     We do not use semantic deduplication. Semantic similarity, in usual cases,
     helps strengthen the context in the prompt and helps the model more likely
@@ -434,7 +166,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
 
     _dedup: Any = PrivateAttr()
     _algo_config: Any = PrivateAttr()
-    _dedup_func: Callable[[list[str]], list[str]] = PrivateAttr()
+    _dedup_func: Callable[[List[str]], List[str]] = PrivateAttr()
 
     def __init__(
         self,
@@ -470,7 +202,6 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             algo_config = SimHashAlgoConfig(**algo_args)
             dedup = SimHash(
                 hash_bits=algo_config.hash_bits,
-                seed=algo_config.seed,
             )
             dedup_func = self._deduplicate_simhash
         elif algo_name == "lsh_bloom":
@@ -483,6 +214,10 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 false_positive_rate=algo_config.false_positive_rate,
             )
             dedup_func = self._deduplicate_lsh_bloom
+        elif algo_name == "suffix_array":
+            algo_config = SuffixAlgoConfig(**algo_args)
+            dedup = None  # Suffix array builds on-demand in _deduplicate_suffix_array
+            dedup_func = self._deduplicate_suffix_array
         else:
             raise ValueError(f"Unsupported algorithm: {algo_name}")
 
@@ -493,7 +228,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
         self._dedup = dedup  # type: ignore[attr-defined]
         self._dedup_func = dedup_func  # type: ignore[attr-defined]
 
-    def _deduplicate_minhash(self, sentences: list[str]) -> list[str]:
+    def _deduplicate_minhash(self, sentences: List[str]) -> List[str]:
         """Deduplicate sentences using C-MinHash with CMinHashDeduplicator.
 
         Uses exact minhash comparison via is_duplicate() and add() methods.
@@ -516,7 +251,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 deduped_sentences.append(sent)
         return deduped_sentences
 
-    def _deduplicate_minhash_lsh(self, sentences: list[str]) -> list[str]:
+    def _deduplicate_minhash_lsh(self, sentences: List[str]) -> List[str]:
         """Deduplicate sentences using R-MinHash with LSH.
 
         Creates a new RMinHashLSH instance per call (no clear() method).
@@ -548,7 +283,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             deduped_sentences.append(sent)
         return deduped_sentences
 
-    def _deduplicate_bloomfilter(self, sentences: list[str]) -> list[str]:
+    def _deduplicate_bloomfilter(self, sentences: List[str]) -> List[str]:
         """Deduplicate sentences using Bloom Filter.
 
         Uses rbloom Bloom Filter for exact deduplication based on sentence hashing.
@@ -565,7 +300,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             deduped_sentences.append(sent)
         return deduped_sentences
 
-    def _deduplicate_simhash(self, sentences: list[str]) -> list[str]:
+    def _deduplicate_simhash(self, sentences: List[str]) -> List[str]:
         """Deduplicate sentences using SimHash.
 
         Computes a SimHash fingerprint for each sentence and compares fingerprints
@@ -574,7 +309,6 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
         """
         self._dedup = SimHash(
             hash_bits=self._algo_config.hash_bits,
-            seed=self._algo_config.seed,
         )
         deduped_sentences = []
         fingerprints = []
@@ -605,7 +339,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
 
         return deduped_sentences
 
-    def _deduplicate_lsh_bloom(self, sentences: list[str]) -> list[str]:
+    def _deduplicate_lsh_bloom(self, sentences: List[str]) -> List[str]:
         """Deduplicate sentences using LSH-Bloom Filter.
 
         Uses MinHash with LSH-Bloom Filter for space-efficient near-duplicate detection.
@@ -639,6 +373,61 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
             # Not a duplicate, insert it
             self._dedup.insert(f"sent_{len(deduped_sentences)}", mh)
             deduped_sentences.append(sent)
+        return deduped_sentences
+
+    def _deduplicate_suffix_array(self, sentences: List[str]) -> List[str]:
+        """Deduplicate sentences using Suffix Array with LCP array.
+
+        This method works on character level to find exact duplicate substrings
+        >= min_length. Sentences containing duplicate characters are removed.
+
+        Inspired by Google's deduplicate-text-datasets and Chenghao Mou's text-dedup.
+        """
+        # Create suffix array instance on-demand
+        suffix_array = SuffixArray(
+            min_length=self._algo_config.min_length,
+            max_length=self._algo_config.max_length,
+        )
+
+        # find_duplicates handles: joining sentences, lowercasing, ord conversion, SA build, duplicate finding
+        # Returns bytearray where duplicate_positions[i] == 1 means position i is a duplicate
+        duplicate_positions = suffix_array.find_duplicates(sentences)
+
+        if not duplicate_positions or all(b == 0 for b in duplicate_positions):
+            return sentences
+
+        # Map duplicate character positions back to sentences
+        # Build a mapping from character position to sentence index
+        sentence_boundaries = []
+        current_pos = 0
+        for sent in sentences:
+            sentence_boundaries.append((current_pos, current_pos + len(sent)))
+            current_pos += len(sent) + 1  # +1 for space separator
+
+        # Find sentences where the ENTIRE sentence is a duplicate
+        # Group by content and keep only the first occurrence
+        # Use bytearray for memory efficiency: 1 byte per sentence vs. ~28 bytes per int in set
+        num_sentences = len(sentences)
+        sentences_to_remove = bytearray(num_sentences)
+        seen_content = {}
+        for sent_idx, (start, end) in enumerate(sentence_boundaries):
+            # Check if all characters in this sentence are in duplicate positions
+            # bytearray index access is O(1) and faster than set membership
+            if all(duplicate_positions[pos] == 1 for pos in range(start, end)):
+                # This sentence is entirely in duplicate regions
+                # Get its normalized content for grouping
+                sent_content = sentences[sent_idx].strip().lower()
+                if sent_content in seen_content:
+                    # Subsequent duplicate, mark for removal
+                    sentences_to_remove[sent_idx] = 1
+                else:
+                    # First occurrence, keep it
+                    seen_content[sent_content] = sent_idx
+
+        # Return non-duplicate sentences
+        deduped_sentences = [
+            sent for idx, sent in enumerate(sentences) if not sentences_to_remove[idx]
+        ]
         return deduped_sentences
 
     def augment(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -935,7 +724,7 @@ class SEEPromptAugmenter(BasePromptAugmenter):
 
     @classmethod
     def _sort_pool(
-        cls, P_t: list[str], S_t: list[SEEPerformanceTuple], pool_size: int
+        cls, P_t: List[str], S_t: List[SEEPerformanceTuple], pool_size: int
     ) -> Tuple[List[str], List[SEEPerformanceTuple]]:
         # S_t elements are SEEPerformanceTuple = (performance_vector, score)
         # Sort by score (index 1) in descending order
