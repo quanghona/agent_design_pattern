@@ -4,7 +4,7 @@ from typing import Any, ClassVar, List, Literal
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from rbloom import Bloom
-from rensa import CMinHash, RMinHash
+from rensa import CMinHash, RMinHash  # type: ignore
 
 
 class BaseAlgoConfig(BaseModel):
@@ -435,7 +435,7 @@ class LSHBloom(BaseModel):
             bloom_filter.clear()
 
     @staticmethod
-    def _get_minhash_values(mh) -> List[int]:
+    def _get_minhash_values(mh: CMinHash | RMinHash) -> List[int]:
         """Extract hash values from a MinHash object.
 
         This method extracts the hash values from either CMinHash or RMinHash
@@ -449,7 +449,7 @@ class LSHBloom(BaseModel):
         """
         # For rensa's CMinHash and RMinHash, use the digest() method
         if hasattr(mh, "digest") and callable(mh.digest):
-            return list(mh.digest())
+            return list(mh.digest())  # type: ignore
         elif hasattr(mh, "h"):
             # CMinHash has 'h' attribute with hash values
             val = mh.h

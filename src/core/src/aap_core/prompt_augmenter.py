@@ -12,7 +12,7 @@ import torch
 from gymnasium import spaces
 from pydantic import Field, PrivateAttr, field_validator
 from rbloom import Bloom
-from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH
+from rensa import CMinHash, CMinHashDeduplicator, RMinHash, RMinHashLSH  # type: ignore
 
 from aap_core.dedup import (
     BloomAlgoConfig,
