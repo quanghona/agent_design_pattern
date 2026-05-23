@@ -434,6 +434,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
 
     _dedup: Any = PrivateAttr()
     _algo_config: Any = PrivateAttr()
+    _dedup_func: Callable[[list[str]], list[str]] = PrivateAttr()
 
     def __init__(
         self,
@@ -449,6 +450,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 num_perm=algo_config.num_perm,
                 seed=algo_config.seed,
             )
+            dedup_func = self._deduplicate_minhash
         elif algo_name == "minhash_lsh":
             algo_config = MinHashLSHAlgoConfig(**algo_args)
             dedup = RMinHashLSH(
@@ -456,18 +458,21 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 num_perm=algo_config.num_perm,
                 num_bands=algo_config.num_bands,
             )
+            dedup_func = self._deduplicate_minhash_lsh
         elif algo_name == "bloomfilter":
             algo_config = BloomAlgoConfig(**algo_args)
             dedup = Bloom(
                 expected_items=algo_config.expected_items,
                 false_positive_rate=algo_config.false_positive_rate,
             )
+            dedup_func = self._deduplicate_bloomfilter
         elif algo_name == "simhash":
             algo_config = SimHashAlgoConfig(**algo_args)
             dedup = SimHash(
                 hash_bits=algo_config.hash_bits,
                 seed=algo_config.seed,
             )
+            dedup_func = self._deduplicate_simhash
         elif algo_name == "lsh_bloom":
             algo_config = LSHBloomAlgoConfig(**algo_args)
             dedup = LSHBloom(
@@ -477,6 +482,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
                 expected_items=algo_config.expected_items,
                 false_positive_rate=algo_config.false_positive_rate,
             )
+            dedup_func = self._deduplicate_lsh_bloom
         else:
             raise ValueError(f"Unsupported algorithm: {algo_name}")
 
@@ -485,6 +491,7 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
         # Set private attributes AFTER super().__init__() (Pydantic v2 requirement)
         self._algo_config = algo_config  # type: ignore[attr-defined]
         self._dedup = dedup  # type: ignore[attr-defined]
+        self._dedup_func = dedup_func  # type: ignore[attr-defined]
 
     def _deduplicate_minhash(self, sentences: list[str]) -> list[str]:
         """Deduplicate sentences using C-MinHash with CMinHashDeduplicator.
@@ -638,15 +645,8 @@ class DeduplicationPromptAugmenter(BasePromptAugmenter):
         if not message.query:
             return message
 
-        deup_funcmap = {
-            "minhash": self._deduplicate_minhash,
-            "minhash_lsh": self._deduplicate_minhash_lsh,
-            "bloomfilter": self._deduplicate_bloomfilter,
-            "simhash": self._deduplicate_simhash,
-            "lsh_bloom": self._deduplicate_lsh_bloom,
-        }
         sentences = nltk.sent_tokenize(message.query.strip())
-        deduped_sentences = deup_funcmap[self._algo_config.algorithm_name](sentences)
+        deduped_sentences = self._dedup_func(sentences)
         message.query = " ".join(deduped_sentences)
         return message
 
