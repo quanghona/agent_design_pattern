@@ -15,6 +15,7 @@ The framework provides four concrete implementations:
 - **`MetaPromptAugmenter`** — delegates prompt rewriting to an LLM chain.
 - **`DeduplicationPromptAugmenter`** — removes exact and near-duplicate sentences from the prompt (documented below).
 - **`SEEPromptAugmenter`** — performs strategic exploration and exploitation for in-context prompt optimization (documented below).
+- **`RLPromptAugmenter`** — uses reinforcement learning to iteratively select and apply augmenters for prompt optimization (documented below).
 
 ![diagram](img/prompt_augmenter-architecture.jpg)
 
@@ -181,7 +182,328 @@ To maximize operator effectiveness, adjust the LLM temperature per phase:
 
 Temperature adjustment is handled at the chain level, outside this class.
 
-### Basic Example: Identity Prompt Augmenter
+### Reinforcement Learning with RLPromptAugmenter
+
+`RLPromptAugmenter` is the most sophisticated prompt augmenter in the framework. It formulates prompt optimization as a **reinforcement learning (RL) problem**, where an intelligent agent learns to iteratively select and apply prompt augmenters to maximize a reward signal. Unlike `SEEPromptAugmenter`, which uses LLM-powered operators to rewrite prompts directly, `RLPromptAugmenter` learns a **policy** — a probability distribution over available augmenters — that determines which augmenter to apply at each step.
+
+This approach is particularly powerful when:
+- You have a diverse set of augmenters (deduplication, formatting, context injection, etc.) and want the system to learn which combination works best.
+- The reward signal is well-defined (e.g., a quality scorer, task accuracy, or human preference).
+- You want to automate prompt engineering without manual LLM-based optimization.
+
+> **Note**: `RLPromptAugmenter` requires a trained policy model. See [Policy Trainer](policy_trainer.md) for training instructions.
+
+#### RL Problem Formulation
+
+The prompt optimization problem is cast as a **Markov Decision Process (MDP)** with the following components:
+
+| RL Component | Description | Implementation |
+|--------------|-------------|----------------|
+| **State / Observation** | The current prompt, represented as an embedding vector | `PromptOptimizationEnv` computes the embedding via a user-provided `embedding_model` |
+| **Action** | Selecting one of the available prompt augmenters to apply | `gymnasium.spaces.Discrete(num_augmenters)` — each action index maps to a `BasePromptAugmenter` |
+| **Reward** | Quality score of the resulting prompt after applying the selected augmenter | Computed by a user-provided `reward_model` callable, minus a duplication penalty |
+| **Transition** | Applying an augmenter modifies the current prompt, leading to a new state (new prompt embedding) | `PromptOptimizationEnv.step()` applies the selected augmenter and returns the new embedding |
+| **Episode Termination** | Episode ends when `max_steps` is reached, the reward exceeds a threshold, or the prompt embedding changes too little | Configurable via `reward_threshold` and `min_embedding_threshold` |
+
+The RL formulation decomposes into two sub-systems:
+
+**1. The Agent (Policy)** — The control algorithm that expresses how we act. The policy model takes the current prompt embedding as input and outputs action logits, which are converted into a probability distribution over augmenters. During training, the policy is updated via policy gradient methods (PPO, REINFORCE++, GRPO). During inference, the trained policy selects augmenters to iteratively optimize the prompt.
+
+**2. The Environment** — The external factor that is not part of the agent itself. The agent only knows the environment through the state (observation), action, and reward signals. In our case, the environment is implemented as `PromptOptimizationEnv`, a `gymnasium` environment that:
+- Maintains the current prompt text and its embedding.
+- Provides a discrete action space (one action per available augmenter).
+- Computes rewards using a user-defined reward model.
+- Applies augmenters to transition between states.
+- Detects episode termination conditions (max steps, reward threshold, embedding stagnation).
+
+#### Workflow: Training vs. Inference
+
+The `RLPromptAugmenter` workflow has two distinct phases:
+
+**Training Phase** — The policy is improved through interaction with the environment:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Training Loop                                          │
+│                                                         │
+│  for each episode:                                      │
+│    1. Reset environment → initial prompt embedding      │
+│    2. for each step:                                    │
+│       a. Policy observes embedding → outputs action logits  │
+│       b. Sample action (explore/exploit)                │
+│       c. Environment applies selected augmenter         │
+│       d. Reward model scores the new prompt             │
+│       e. Policy gradient update (PPO / REINFORCE++ / GRPO) │
+│    3. Check early stopping (no improvement)             │
+│    4. Save checkpoint                                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+The training loop is implemented in `BasePolicyTrainer.fit()` and its subclasses (`PPOTrainer`, `ReinforcePPTrainer`, `GRPOTrainer`). Key training components:
+
+- **Policy Model**: A neural network (e.g., `GPT2Policy`, `GPT2RoPEGQAPolicy`) that maps prompt embeddings to action logits.
+- **Exploration Strategy**: `EpsilonGreedyExploration` with linear decay from `eps_init` to `eps_final`, or `RandomExploration` for fixed ratios.
+- **Replay Buffer**: `SimpleReplayBuffer` for off-policy trainers, or no buffer for on-policy trainers.
+- **Optimization**: Adam optimizer with optional learning rate scheduler.
+- **Logging**: Weights & Biases (WandB) integration for tracking episode rewards, action loss, entropy, and KL divergence.
+- **Checkpointing**: Periodic model saving for resuming training.
+
+**Inference Phase** — The trained policy interacts with the environment to optimize a prompt:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Inference (RLPromptAugmenter.augment)                  │
+│                                                         │
+│  1. Extract initial prompt from AgentMessage.query      │
+│  2. Reset environment with initial prompt               │
+│  3. while step_count < max_steps:                       │
+│       a. Policy observes embedding → selects action     │
+│       b. Environment applies selected augmenter         │
+│       c. If terminated or truncated → break             │
+│  4. Return AgentMessage with optimized prompt           │
+└─────────────────────────────────────────────────────────┘
+```
+
+During inference, the policy operates **deterministically** (no exploration) — it always selects the action with the highest probability.
+
+#### Environment and Reward Design
+
+The `PromptOptimizationEnv` class is the bridge between the RL framework and the prompt augmentation domain. It is a `gymnasium` environment that manages the prompt optimization lifecycle.
+
+**Environment Configuration:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `initial_prompt` | `str` | *(required)* | The starting prompt for the episode |
+| `augmenters` | `Sequence[BasePromptAugmenter]` | *(required)* | List of augmenters available as actions. Each augmenter maps to one action index |
+| `embedding_model` | `Callable[[str], np.ndarray]` | *(required)* | Converts prompt text to an embedding vector. Common choices: `sentence-transformers` models like `BAAI/bge-small-en-v1.5` |
+| `reward_model` | `Callable[[str], float]` | *(required)* | Scores the quality of a prompt. Common choices: `agentlans/bge-small-en-v1.5-prompt-quality` or task-specific accuracy metrics |
+| `max_steps` | `int` | `10` | Maximum number of steps per episode |
+| `min_embedding_threshold` | `float` | `0.8` | Episode terminates if cosine similarity between consecutive prompt embeddings falls below this threshold (prevents meaningless changes) |
+| `reward_threshold` | `float` | `inf` | Episode terminates if the reward exceeds this threshold (useful when a perfect score is achievable) |
+| `penalty_weight` | `float` | `0.2` | Weight for the duplication penalty. Final reward = `base_reward - (duplication_penalty * penalty_weight)` |
+
+**Reward Design:**
+
+The reward signal is the most critical design choice in RL prompt optimization. The environment computes the reward as:
+
+$$\text{reward} = \text{reward\_model}(\text{prompt}) - (\text{duplication\_penalty} \times \text{penalty\_weight})$$
+
+The **duplication penalty** uses a Bloom filter to detect repeated sentences and penalizes the reward proportionally to $\sqrt{\text{total\_duplicate\_chars}}$. This prevents the policy from repeatedly applying augmenters that introduce redundant content.
+
+**Common Reward Models:**
+
+| Reward Model | Source | Use Case |
+|-------------|--------|----------|
+| `agentlans/bge-small-en-v1.5-prompt-quality` | Hugging Face | General prompt quality scoring |
+| Task accuracy | Custom function | Maximize task-specific performance (e.g., classification accuracy on a dev set) |
+| Length penalty | Custom function | Encourage concise prompts |
+| Human preference | Custom function | Optimize toward human-rated quality |
+
+**Policy Model Design:**
+
+The policy model is a neural network that maps prompt embeddings to action probabilities. The framework provides two built-in models:
+
+| Model | Architecture | Description |
+|-------|-------------|-------------|
+| `GPT2Policy` | GPT-2 (minGPT) | Transformer-based policy with causal self-attention. Observations are projected to the embedding dimension and processed through transformer blocks. Supports value head for critic-based methods. |
+| `GPT2RoPEGQAPolicy` | Upgraded GPT-2 | Enhanced policy with RMSNorm, RoPE (Rotary Positional Embeddings), and Grouped Query Attention (GQA). Better performance with fewer parameters. |
+
+Both models inherit from `BasePolicy` and implement:
+- `forward(obs)`: Maps observation tensor to action logits.
+- `get_action(logits, deterministic)`: Samples an action from the logits (deterministic argmax or stochastic sampling).
+- `evaluate_actions(obs, actions, masks)`: Computes log probabilities, entropy, and value estimates for policy gradient updates.
+- `save(path)` / `load(path)`: Checkpoint management.
+
+**Trainer Design:**
+
+The trainer classes inherit from `BasePolicyTrainer` and implement different policy gradient algorithms. Most trainers are inherited from RLHF (Reinforcement Learning from Human Feedback) tasks and adapted for prompt optimization:
+
+| Trainer | Algorithm | On/Off-Policy | Critic | Description |
+|---------|-----------|---------------|--------|-------------|
+| `PPOTrainer` | Proximal Policy Optimization | On-policy | Optional | The most widely used policy gradient method. Uses clipped surrogate objective for stable updates. Supports KL loss for controlling policy drift. |
+| `ReinforcePPTrainer` | REINFORCE++ | On-policy | None | A simplified approach using mean reward baseline and PPO-style clipping, but without a critic network. Uses cumulative returns directly. |
+| `GRPOTrainer` | Group Relative Policy Optimization | On/Off-policy | None | Uses group-relative advantages (comparing outputs from the same prompt). Supports both on-policy and off-policy modes with replay buffer. |
+
+**Replay Buffers** (for off-policy trainers):
+
+| Buffer | Sampling Strategy | Description |
+|--------|-------------------|-------------|
+| `SimpleReplayBuffer` | Uniform random | FIFO circular buffer with uniform sampling. Suitable for off-policy trainers. |
+| `PrioritizedReplayBuffer` | Advantage-weighted | Prioritizes transitions with higher TD-error (or advantage). Uses a binary heap for O(log N) priority updates. |
+
+#### Basic Example: RLPromptAugmenter Inference
+
+```python
+from aap_core import AgentMessage
+from aap_core.policy import GPT2RoPEGQAPolicy
+from aap_core.prompt_augmenter import (
+    IdentityPromptAugmenter,
+    PromptOptimizationEnv,
+    RLPromptAugmenter,
+    SimplePromptAugmenter,
+)
+import numpy as np
+import torch
+from sentence_transformers import SentenceTransformer
+
+# 1. Define the embedding model
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+# 2. Define the reward model (prompt quality scorer)
+reward_model = SentenceTransformer("agentlans/bge-small-en-v1.5-prompt-quality")
+
+# 3. Define available augmenters (actions)
+augmenters = [
+    IdentityPromptAugmenter(),  # Action 0: do nothing
+    SimplePromptAugmenter(
+        format="{query}\n\nAdditional context:\n{data}",
+        data_key="context.data",
+    ),  # Action 1: add context
+]
+
+# 4. Create the environment
+env = PromptOptimizationEnv(
+    initial_prompt="Explain quantum entanglement.",
+    augmenters=augmenters,
+    embedding_model=embedding_model.encode,
+    reward_model=lambda prompt: float(reward_model.encode(prompt)),
+    max_steps=5,
+)
+
+# 5. Load the trained policy model
+policy_model = GPT2RoPEGQAPolicy.load("./ckpt/best_policy.pt")
+
+# 6. Create the RL Prompt Augmenter
+rl_augmenter = RLPromptAugmenter(env=env, policy_model=policy_model)
+
+# 7. Use it in a chain
+message = AgentMessage(query="Explain quantum entanglement.")
+result = rl_augmenter(message)
+print(result.query)  # The optimized prompt
+```
+
+#### Advanced Example: Training an RLPromptAugmenter
+
+```python
+from aap_core.policy import GPT2RoPEGQAPolicy
+from aap_core.policy_trainer import EpsilonGreedyExploration, PPOTrainer
+from aap_core.prompt_augmenter import (
+    IdentityPromptAugmenter,
+    PromptOptimizationEnv,
+    SimplePromptAugmenter,
+)
+from sentence_transformers import SentenceTransformer
+from gymnasium import spaces
+import torch
+
+# Load models
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+reward_model = SentenceTransformer("agentlans/bge-small-en-v1.5-prompt-quality")
+
+# Define augmenters
+augmenters = [
+    IdentityPromptAugmenter(),
+    SimplePromptAugmenter(
+        format="{query}\n\nContext:\n{data}",
+        data_key="context.data",
+    ),
+]
+
+# Create environment
+env = PromptOptimizationEnv(
+    initial_prompt="Explain AI.",
+    augmenters=augmenters,
+    embedding_model=embedding_model.encode,
+    reward_model=lambda prompt: float(reward_model.encode(prompt)),
+    max_steps=5,
+)
+
+# Create policy model
+policy_model = GPT2RoPEGQAPolicy(
+    action_space=env.action_space,
+    observation_space=env.observation_space,
+    n_layer=4,
+    n_head=4,
+    n_embd=128,
+    block_size=64,
+)
+
+# Set up optimizer and scheduler
+optimizer = torch.optim.Adam(policy_model.parameters(), lr=1e-4)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=1000, eta_min=1e-6
+)
+
+# Set up exploration
+exploration = EpsilonGreedyExploration(
+    eps_init=0.5,
+    eps_final=0.05,
+    decay_episodes=1000,
+)
+
+# Create trainer
+trainer = PPOTrainer(
+    policy_model=policy_model,
+    env=env,
+    max_episodes=1000,
+    optimizer=optimizer,
+    lr_scheduler=lr_scheduler,
+    exploration_module=exploration,
+    clip_param=0.2,
+    num_mini_batch=192,
+    value_loss_coef=0.5,
+    entropy_coef=0.01,
+    max_grad_norm=1.0,
+    gamma=0.99,
+)
+
+# Train
+trainer.fit(
+    checkpoint_every=100,
+    earlystop_last=600,
+    record_every=10,
+    use_wandb=True,
+    wandb_project="prompt_optimization",
+    checkpoint_dir="./ckpt",
+)
+
+# Save the best policy
+policy_model.save("./ckpt/best_policy.pt")
+```
+
+#### Configuration
+
+`RLPromptAugmenter` has minimal configuration — it delegates most settings to the environment and the trained policy:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `env` | `PromptOptimizationEnv` | *(required)* | The prompt optimization environment containing the augmenters, embedding model, and reward model |
+| `policy_model` | `BasePolicy` | *(required)* | The trained policy model that selects augmenters |
+
+The environment (`PromptOptimizationEnv`) and policy model (`BasePolicy` subclasses) have their own configuration options documented in their respective sections above.
+
+#### When to Use RLPromptAugmenter
+
+`RLPromptAugmenter` is the right choice when:
+
+- **You have a well-defined reward signal**: The reward model must provide meaningful, differentiable feedback. A good reward model is the single most important factor for success.
+- **You want to automate augmenter selection**: Instead of manually composing augmenters, let the policy learn the optimal sequence.
+- **You have diverse augmenters**: The more augmenters in the action space, the more the policy can learn to combine them effectively.
+- **You can afford training time**: Training typically requires hundreds to thousands of episodes. Use early stopping to halt when performance plateaus.
+
+`RLPromptAugmenter` is **not** the right choice when:
+
+- **You need fast, deterministic augmentation**: The RL inference loop is slower than a single augmenter application.
+- **You lack a good reward model**: Poor rewards lead to poor policies. If you cannot define a meaningful reward, use `SEEPromptAugmenter` instead.
+- **You have only one or two augmenters**: The RL approach shines with diverse action spaces. For simple cases, `SimplePromptAugmenter` or `MetaPromptAugmenter` is sufficient.
+
+#### See Also
+
+- [Policy Trainer](policy_trainer.md) — Training policy models for `RLPromptAugmenter`
+- [PromptOptimizationEnv](#reinforcement-learning-with-rlpromptaugmenter) — The RL environment for prompt optimization
+- [SEEPromptAugmenter](#strategic-prompt-optimization-with-seepromptaugmenter) — LLM-based prompt optimization (alternative to RL)
+- [RL Prompt Augmenter Training Example](../../example/transformers/rl_prompt_augmenter_training.ipynb) — Complete training notebook
 
 ```python
 from aap_core import AgentMessage
@@ -712,33 +1034,12 @@ See the full API reference: [`BasePromptAugmenter`][aap_core.prompt_augmenter.Ba
         show_root_heading: true
         show_signature: true
 
-## See Also
-
-- [Chain](chain.md) — How prompt augmenters integrate into the `TypicalLLMChain` pipeline
-- [Retriever](retriever.md) — How retrieved data is stored in `AgentMessage.context` for augmentation
-- [Dedup](dedup.md) — The underlying deduplication algorithms (Bloom, MinHash, SimHash, Suffix Array) used by `DeduplicationPromptAugmenter`
-
-::: aap_core.prompt_augmenter.BasePromptAugmenter
+::: aap_core.prompt_augmenter.RLPromptAugmenter
     options:
         show_root_heading: true
         show_signature: true
 
-::: aap_core.prompt_augmenter.IdentityPromptAugmenter
-    options:
-        show_root_heading: true
-        show_signature: true
-
-::: aap_core.prompt_augmenter.SimplePromptAugmenter
-    options:
-        show_root_heading: true
-        show_signature: true
-
-::: aap_core.prompt_augmenter.MetaPromptAugmenter
-    options:
-        show_root_heading: true
-        show_signature: true
-
-::: aap_core.prompt_augmenter.DeduplicationPromptAugmenter
+::: aap_core.prompt_augmenter.PromptOptimizationEnv
     options:
         show_root_heading: true
         show_signature: true
@@ -749,3 +1050,4 @@ See the full API reference: [`BasePromptAugmenter`][aap_core.prompt_augmenter.Ba
 - [Retriever](retriever.md) — How retrieved data is stored in `AgentMessage.context` for augmentation
 - [Dedup](dedup.md) — The underlying deduplication algorithms (Bloom, MinHash, SimHash, Suffix Array) used by `DeduplicationPromptAugmenter`
 - [Policy Trainer](policy_trainer.md) — How to train a `BasePolicy` for use with `RLPromptAugmenter`
+- [RL Prompt Augmenter Training Example](../../example/transformers/rl_prompt_augmenter_training.ipynb) — Complete training notebook for `RLPromptAugmenter`
