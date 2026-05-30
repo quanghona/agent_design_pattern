@@ -1,7 +1,18 @@
 site_name: AI Agent Pattern
 repo_url: https://github.com/quanghona/agent_design_pattern
 theme:
-  name: readthedocs
+  name: material
+  features:
+    - content.code.copy
+    - content.code.select
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+
 nav:
   - Home: home.md
   - Core:
@@ -46,6 +57,14 @@ plugins:
             - src/langchain/src/aap_langchain
             - src/llamaindex/src/aap_llamaindex
             - src/transformers/src/aap_transformers
+          options:
+            docstring_style: google
+            members_order: alphabetical
+            inherited_members: true
+            show_if_no_docstring: true
+            show_signature: true
+            show_signature_annotations: true
+            show_docstring_style: google
 
         selection:
           filters: ["!^_"]
