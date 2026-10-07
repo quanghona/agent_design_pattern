@@ -1,6 +1,7 @@
 """Tests for aap_core.types module - AgentMessage, BaseChain, BaseLLMChain, TokenUsage."""
 
 import json
+import logging
 
 import pytest
 from aap_core.types import (
@@ -9,6 +10,7 @@ from aap_core.types import (
     BaseLLMChain,
     TokenUsage,
 )
+from pydantic import PrivateAttr
 
 
 class TestTokenUsage:
@@ -154,6 +156,43 @@ class TestAgentMessage:
         assert copied.responses is not msg.responses  # deep copy
 
 
+class TestFormatKwargs:
+    """Tests for AgentMessage.format_kwargs - template-safe serialization."""
+
+    def test_excludes_query_media(self):
+        """Test that query_media never reaches prompt templates (leak guard)."""
+        msg = AgentMessage(query="q", query_media=[("image", "https://x/a.png")])
+        assert "query_media" not in msg.format_kwargs()
+
+    def test_excludes_media(self):
+        """Test that output media never reaches prompt templates."""
+        msg = AgentMessage(query="q", media=[("image", "base64data")])
+        assert "media" not in msg.format_kwargs()
+
+    def test_keeps_query_and_context(self):
+        """Test that query and flattened context are still present."""
+        msg = AgentMessage(query="q", context={"a": 1, "b": {"c": 2}})
+        kwargs = msg.format_kwargs()
+        assert kwargs["query"] == "q"
+        assert kwargs["context_a"] == 1
+        assert kwargs["context_b_c"] == 2
+
+    def test_to_dict_still_serializes_media(self):
+        """Test that to_dict (the serialization path) keeps media fields."""
+        msg = AgentMessage(
+            query="q", query_media=[("image", "u")], media=[("image", "m")]
+        )
+        d = msg.to_dict()
+        assert d["query_media"] == [("image", "u")]
+        assert d["media"] == [("image", "m")]
+
+    def test_format_kwargs_template_roundtrip(self):
+        """Test that formatting a template with format_kwargs cannot leak reprs."""
+        msg = AgentMessage(query="what is this?", query_media=[("image", "/tmp/a.png")])
+        rendered = "{query}".format(**msg.format_kwargs())
+        assert rendered == "what is this?"
+
+
 class TestBaseChain:
     """Tests for BaseChain abstract class."""
 
@@ -219,3 +258,125 @@ class TestBaseLLMChain:
         msg = AgentMessage(query="test")
         result = chain(msg, extra_kwarg="value")
         assert result.execution_result == "success"
+
+
+class CapabilityMockChain(MockLLMChain):
+    """BaseLLMChain stub with a controllable detect_capabilities result."""
+
+    _capabilities = PrivateAttr(default_factory=dict)
+
+    def __init__(self, capabilities=None, **kwargs):
+        super().__init__(**kwargs)
+        self._capabilities = capabilities or {}
+
+    def detect_capabilities(self):
+        return self._capabilities
+
+
+class TestMediaGate:
+    """Tests for BaseLLMChain media_support / _modality_ok / _media_parts."""
+
+    def test_default_media_support_is_empty(self):
+        """Test unlisted modalities default to auto-detection."""
+        assert MockLLMChain().media_support == {}
+
+    def test_detect_capabilities_default_is_empty(self):
+        """Test the base hook reports everything undecidable by default."""
+        assert MockLLMChain().detect_capabilities() == {}
+
+    def test_auto_undetectable_assumes_capable(self):
+        """Test fail-loud policy: unknown modality keeps media."""
+        assert CapabilityMockChain()._modality_ok("image") is True
+
+    @pytest.mark.parametrize(
+        "capabilities,expected",
+        [({"image": True}, True), ({"image": False}, False), ({}, True)],
+    )
+    def test_auto_matrix(self, capabilities, expected):
+        """Test auto mode maps per-modality detection results to the gate."""
+        assert (
+            CapabilityMockChain(capabilities=capabilities)._modality_ok("image")
+            is expected
+        )
+
+    def test_enabled_overrides_negative_detection(self):
+        """Test enabled forces a modality's gate open even when detection says no."""
+        chain = CapabilityMockChain(
+            capabilities={"image": False}, media_support={"image": "enabled"}
+        )
+        assert chain._modality_ok("image") is True
+
+    def test_disabled_overrides_positive_detection(self):
+        """Test disabled forces a modality's gate closed even when detection says yes."""
+        chain = CapabilityMockChain(
+            capabilities={"image": True}, media_support={"image": "disabled"}
+        )
+        assert chain._modality_ok("image") is False
+
+    def test_gates_are_independent_per_modality(self):
+        """Test a model supporting a subset: one modality off must not affect another."""
+        chain = CapabilityMockChain(
+            capabilities={"image": True, "audio": False},
+            media_support={"video": "disabled"},
+        )
+        assert chain._modality_ok("image") is True
+        assert chain._modality_ok("audio") is False  # detected incapable
+        assert chain._modality_ok("video") is False  # policy disabled
+        assert chain._modality_ok("document") is True  # unknown -> auto
+
+    def test_media_parts_resolves_url_images(self):
+        """Test images pass through the open gate as MediaRefs."""
+        msg = AgentMessage(query="q", query_media=[("image", "https://x/a.png")])
+        parts = CapabilityMockChain(capabilities={"image": True})._media_parts(
+            msg, "image"
+        )
+        assert parts == [
+            {
+                "content_type": "image",
+                "kind": "url",
+                "value": "https://x/a.png",
+                "mime_type": "image/png",
+            }
+        ]
+
+    def test_media_parts_empty_without_media(self):
+        """Test text-only messages yield no parts for any modality."""
+        assert (
+            CapabilityMockChain()._media_parts(AgentMessage(query="q"), "image") == []
+        )
+
+    def test_media_parts_filters_other_modalities(self):
+        """Test only the requested modality is extracted from query_media."""
+        msg = AgentMessage(
+            query="q", query_media=[("text", "hi"), ("audio", "https://x/a.mp3")]
+        )
+        assert CapabilityMockChain()._media_parts(msg, "image") == []
+        audio = CapabilityMockChain()._media_parts(msg, "audio")
+        assert audio[0]["content_type"] == "audio"
+        assert audio[0]["mime_type"] == "audio/mpeg"
+
+    def test_media_parts_drops_media_when_gate_closed(self, caplog):
+        """Test media are dropped with a modality-specific warning when incapable."""
+        msg = AgentMessage(query="q", query_media=[("image", "https://x/a.png")])
+        chain = CapabilityMockChain(capabilities={"image": False})
+        with caplog.at_level(logging.WARNING, logger="aap_core.types"):
+            assert chain._media_parts(msg, "image") == []
+        assert "does not support image input" in caplog.text
+
+    def test_media_parts_local_path_resolved_to_base64(self, tmp_path):
+        """Test local image paths are resolved through the gate."""
+        f = tmp_path / "a.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        msg = AgentMessage(query="q", query_media=[("image", str(f))])
+        parts = CapabilityMockChain()._media_parts(msg, "image")
+        assert parts[0]["kind"] == "base64"
+        assert parts[0]["mime_type"] == "image/png"
+
+    def test_image_parts_delegates_to_media_parts(self):
+        """Test the image sugar matches the generic funnel exactly."""
+        msg = AgentMessage(
+            query="q",
+            query_media=[("image", "https://x/a.png"), ("audio", "https://x/b.mp3")],
+        )
+        chain = CapabilityMockChain(capabilities={"image": True})
+        assert chain._image_parts(msg) == chain._media_parts(msg, "image")

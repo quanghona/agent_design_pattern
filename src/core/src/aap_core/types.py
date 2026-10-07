@@ -1,9 +1,14 @@
 import abc
 import json
+import logging
 from typing import Any, Dict, List, Literal, Tuple, TypeVar
 from typing_extensions import TypedDict
 
 from pydantic import BaseModel, Field
+
+from .utils import resolve_media
+
+logger = logging.getLogger(__name__)
 
 
 ChainMessage = TypeVar("ChainMessage")
@@ -16,6 +21,24 @@ class TokenUsage(TypedDict):
     input_tokens: int
     output_tokens: int
     total_tokens: int
+
+
+class MediaReference(TypedDict):
+    """A resolved media reference, ready to be mapped to a framework-native content part.
+
+    Attributes:
+        content_type: The modality of this reference, from ContentType. Refs are
+            self-describing so chains can map each to the correct native part type.
+        kind: How the media is carried. Either a remote URL or base64-encoded bytes
+            (local paths are read and converted to base64 by resolve_media).
+        value: The URL string or the base64 payload (without the data: prefix).
+        mime_type: Detected or guessed MIME type, e.g. "image/png".
+    """
+
+    content_type: ContentType
+    kind: Literal["url", "base64"]
+    value: str
+    mime_type: str
 
 
 class AgentMessage(BaseModel):
@@ -100,6 +123,22 @@ class AgentMessage(BaseModel):
                 msg_json[k] = v
         return msg_json
 
+    def format_kwargs(self) -> Dict[str, Any]:
+        """Keyword arguments for prompt-template interpolation.
+
+        Same as to_dict() but without the media fields (query_media and media).
+        Media must never be interpolated into a text template as a Python repr;
+        it is delivered to the model as native content parts instead.
+        Chains should call this method, not to_dict(), when formatting user prompt templates.
+
+        Returns:
+            dict: Template-safe kwargs containing query, responses and flattened context.
+        """
+        kwargs = self.to_dict()
+        kwargs.pop("query_media", None)
+        kwargs.pop("media", None)
+        return kwargs
+
     def dump_json(self) -> str:
         """
         Converts the AgentMessage object into a JSON string.
@@ -144,6 +183,23 @@ class BaseLLMChain(BaseChain):
         "chain",
         description="The name of the chain. Should be same at agent who hold this chain for easy to operate.",
     )
+    media_support: Dict[ContentType, Literal["auto", "enabled", "disabled"]] = Field(
+        default_factory=dict,
+        description="""Per-modality policy controlling whether media of each ContentType
+        from AgentMessage.query_media is delivered to the model as native content parts.
+        Unlisted modalities default to "auto". Models support subsets of modalities,
+        so the policy and capability detection are per-modality, never global.
+        - "auto": rely on detect_capabilities(). Media of that modality is
+          force-disabled when the model is known not to accept it; undetectable
+          is assumed capable (fail loud).
+        - "enabled": always attach parts of that modality, overriding detection.
+        - "disabled": never attach parts of that modality.
+
+        Currently only "image" refs are mapped to native parts by the integration
+        packages; the other ContentType keys are wired at the base layer so adding
+        a modality later is a package-side mapping plus sniffing-table change, not
+        a redesign of this gate.""",
+    )
 
     @abc.abstractmethod
     def invoke(self, message: AgentMessage, **kwargs) -> AgentMessage:
@@ -154,3 +210,68 @@ class BaseLLMChain(BaseChain):
 
     def __call__(self, message: AgentMessage, **kwargs) -> AgentMessage:
         return self.invoke(message, **kwargs)
+
+    def detect_capabilities(self) -> Dict[ContentType, bool]:
+        """Report which modalities the underlying model is known to accept.
+
+        Hook for subclasses in integration packages to query framework-native
+        capability metadata (e.g. llama-index Capability.VISION/AUDIO,
+        transformers processor components) or fall back to model-name heuristics.
+        Models support subsets of modalities, so the result is per-modality.
+
+        Returns:
+            Dict[ContentType, bool]: Known capabilities per modality. Modalities
+            absent from the dict are undecidable and treated as capable
+            (fail-loud default).
+        """
+        return {}
+
+    def _modality_ok(self, content_type: ContentType) -> bool:
+        """Gate deciding whether parts of one modality may be attached."""
+        policy = self.media_support.get(content_type, "auto")
+        if policy == "enabled":
+            return True
+        if policy == "disabled":
+            return False
+        return self.detect_capabilities().get(content_type) is not False
+
+    def _media_parts(
+        self, message: AgentMessage, content_type: ContentType
+    ) -> List[MediaReference]:
+        """Resolve media of one modality carried by a message into framework-ready refs.
+
+        This is the single funnel every chain must use to obtain media for a
+        message. It returns an empty list when the message carries no media of
+        that modality or when the modality gate (_modality_ok) is closed, in
+        which case any carried items are dropped and a warning is logged.
+
+        Args:
+            message: The agent message whose query_media may carry media.
+            content_type: The modality to extract, e.g. "image".
+
+        Returns:
+            List[MediaRef]: Resolved references of that modality, in original order.
+        """
+        items = [
+            (media_type, value)
+            for media_type, value in message.query_media or []
+            if media_type == content_type
+        ]
+        if not items:
+            return []
+        if not self._modality_ok(content_type):
+            logger.warning(
+                f"Chain '{self.name}' model does not support {content_type} input; "
+                f"dropping {len(items)} {content_type}(s) from query_media."
+            )
+            return []
+        return resolve_media(items)
+
+    def _image_parts(self, message: AgentMessage) -> List[MediaReference]:
+        """Resolve the image media of a message.
+
+        Sugar for _media_parts(message, "image"). Image is the first modality
+        wired through the integration packages; audio/video/document will get
+        their own sugar (or call _media_parts directly) when implemented.
+        """
+        return self._media_parts(message, "image")
