@@ -14,4 +14,9 @@ note.md
 
 ckpt/
 .github/prompts/
+.github/agents/
+.github/skills/
+.github/instructions/
+.github/mkdoc_memory/
+
 **/data/*.md
