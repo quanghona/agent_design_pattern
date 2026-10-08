@@ -47,3 +47,6 @@ dev = [
 weaviate = [
     "langchain-weaviate"
 ]
+hf = [
+    "huggingface-hub>=0.23.0"
+]

@@ -1,9 +1,8 @@
 from collections.abc import Callable, Sequence
-from typing import Dict, List, Tuple
-
+from typing import Any, Dict, List, Tuple
 from aap_core import utils
 from aap_core.chain import BaseCausalMultiTurnsChain
-from aap_core.types import AgentMessage, TokenUsage
+from aap_core.types import AgentMessage, ContentType, TokenUsage
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -15,7 +14,16 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
-from aap_langchain.utils import token_from_response
+from aap_langchain.utils import (
+    extract_repo_id,
+    huggingface_capabilities,
+    media_ref_to_content_block,
+    profile_to_capabilities,
+    token_from_response,
+)
+
+# Modalities the media gate can consult; detection reports on these.
+_GATED_MODALITIES: Tuple[ContentType, ...] = ("image", "audio", "video", "document")
 
 
 class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage]):
@@ -27,6 +35,7 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
     _tool_dict: Dict[str, Callable | BaseTool] = PrivateAttr({})
     _tool_choice: str | None = PrivateAttr()
     _chain = PrivateAttr()
+    _capabilities_cache: Dict[ContentType, bool] | None = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -43,10 +52,74 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
         self._user_prompt_template = user_prompt_template
         self.bind_tools(tools, tool_choice=tool_choice)
 
+    def detect_capabilities(self) -> Dict[ContentType, bool]:
+        """Resolve per-modality input support from model metadata, not model names.
+
+        Sources, in priority order:
+        1. What the user declared in media_support ("enabled"/"disabled"). The
+           core gate applies that before this method runs, so an explicit
+           declaration always wins.
+        2. The langchain model profile (model.profile), the capability table the
+           provider ships for the exact model revision.
+        3. Hugging Face model-card metadata, for models identified by repo id
+           (needs the "hf" extra).
+
+        Model-family names carry no weight here: variants of one family differ
+        per modality (an audio-capable small model and a larger sibling without
+        audio input share a name prefix), so name matching misreports exactly
+        the cases that matter. Modalities no source reports on stay absent, and
+        auto mode treats them as capable (fail loud).
+
+        The result is cached per model instance and invalidated when the model
+        is replaced, since the Hugging Face source costs a network request.
+        """
+        if self._capabilities_cache is None:
+            self._capabilities_cache = self._resolve_capabilities()
+        return dict(self._capabilities_cache)
+
+    def _resolve_capabilities(self) -> Dict[ContentType, bool]:
+        """Query the metadata sources once, filling gaps from the next source."""
+        capabilities = profile_to_capabilities(getattr(self._model, "profile", None))
+        if set(capabilities) != set(_GATED_MODALITIES):
+            repo_id = extract_repo_id(self._identifier_candidates())
+            if repo_id is not None:
+                for modality, value in huggingface_capabilities(repo_id).items():
+                    capabilities.setdefault(modality, value)
+        return capabilities
+
+    def _identifier_candidates(self) -> List[str]:
+        """Model identifiers to test for a Hugging Face repo id, best first."""
+        profile = getattr(self._model, "profile", None)
+        candidates: List[str] = []
+        if isinstance(profile, dict) and isinstance(profile.get("name"), str):
+            candidates.append(profile["name"])
+        try:
+            name = self._model._get_ls_params().get("ls_model_name")
+            if isinstance(name, str):
+                candidates.append(name)
+        except Exception:  # noqa: BLE001 - not all integrations implement it
+            pass
+        for holder in (self._model, getattr(self._model, "llm", None)):
+            if holder is None:
+                continue
+            for attr in ("repo_id", "model_id", "model_name", "model"):
+                value = getattr(holder, attr, None)
+                if isinstance(value, str):
+                    candidates.append(value)
+        return candidates
+
     def _prepare_conversation(self, message: AgentMessage) -> List[BaseMessage]:
+        user_prompt = self._user_prompt_template.format(**message.format_kwargs())
+        images = self._image_parts(message)
+        user_content: str | List[Any] = user_prompt
+        if images:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                *[media_ref_to_content_block(ref) for ref in images],
+            ]
         conversation = [
             SystemMessage(self._system_prompt),
-            HumanMessage(self._user_prompt_template.format(**message.to_dict())),
+            HumanMessage(user_content),
         ]
         total_turns = (
             min(len(message.responses), self.include_history)
@@ -204,6 +277,7 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[BaseMessage, AIMessage
     @model.setter
     def model(self, model: BaseChatModel):
         self._model = model
+        self._capabilities_cache = None
         if len(self._tool_dict) > 0:
             model_with_tools = self._model.bind_tools(
                 list(self._tool_dict.values()),
