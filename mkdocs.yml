@@ -1,0 +1,70 @@
+site_name: AI Agent Pattern
+repo_url: https://github.com/quanghona/agent_design_pattern
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - content.code.select
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+
+nav:
+  - Home: home.md
+  - Core:
+      - Overview: core/overview.md
+      - Components:
+          - Agent: core/components/agent.md
+          - Chain: core/components/chain.md
+          - Orchestration: core/components/orchestration.md
+          - Prompt Augmenter: core/components/prompt_augmenter.md
+          - Retriever: core/components/retriever.md
+          - Types: core/components/types.md
+  - Integrations:
+      - DSPy:
+          - Overview: integrations/dspy/overview.md
+          - Components:
+              - Chain: integrations/dspy/components/chain.md
+              - Retriever: integrations/dspy/components/retriever.md
+      - LangChain:
+          - Overview: integrations/langchain/overview.md
+          - Components:
+              - Chain: integrations/langchain/components/chain.md
+              - Retriever: integrations/langchain/components/retriever.md
+      - LlamaIndex:
+          - Overview: integrations/llamaindex/overview.md
+          - Components:
+              - Chain: integrations/llamaindex/components/chain.md
+              - Retriever: integrations/llamaindex/components/retriever.md
+      - Transformers:
+          - Overview: integrations/transformers/overview.md
+          - Components:
+              - Chain: integrations/transformers/components/chain.md
+              - Retriever: integrations/transformers/components/retriever.md
+  - 'API Reference': api-reference.md
+
+plugins:
+  - mkdocstrings:
+      handler:
+        python:
+          paths:
+            - src/core/src/aap_core
+            - src/dspy/src/aap_dspy
+            - src/langchain/src/aap_langchain
+            - src/llamaindex/src/aap_llamaindex
+            - src/transformers/src/aap_transformers
+          options:
+            docstring_style: google
+            members_order: alphabetical
+            inherited_members: true
+            show_if_no_docstring: true
+            show_signature: true
+            show_signature_annotations: true
+            show_docstring_style: google
+
+        selection:
+          filters: ["!^_"]
