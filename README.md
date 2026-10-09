@@ -1,3 +1,12 @@
+> [!IMPORTANT]
+> This repository is deprecated and all packages are migrated to its own repository
+> - [aap_core](https://github.com/quanghona/aap_core.git)
+> - [aap_langchain](https://github.com/quanghona/aap_langchain.git)
+> - [aap_llamaindex](https://github.com/quanghona/aap_llamaindex.git)
+> - [aap_dspy](https://github.com/quanghona/aap_dspy.git)
+> - [aap_transformers](https://github.com/quanghona/aap_transformers.git)
+> - [aap_example](https://github.com/quanghona/aap_example.git) Notebook examples for above repositories
+
 # AI Agent pattern (AAP)
 AI Agent Pattern aim to provide orchestration logic for agents. This project aim to target orchestration between agents. The LLM manipulation is delegated to other libraries such as langchain, llamaindex, transformers, etc. Thus, it will have integration with those frameworks beside the core logic.
 
