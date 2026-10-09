@@ -75,6 +75,10 @@ class TestRetrieverAdapterRetrieve:
         """Test that retrieve adds retrieved documents to message context."""
         documents = _create_test_documents()
         llamaindex_retriever = _create_index_with_documents(documents)
+        # MockEmbedding gives every document the same vector, so ranking and
+        # top-k selection are arbitrary. Retrieve all documents to make the
+        # content assertion deterministic; position assertions are meaningless.
+        llamaindex_retriever.similarity_top_k = len(documents)
         adapter = RetrieverAdapter(retriever=llamaindex_retriever)
         message = AgentMessage(query="What is the capital of France?")
 
@@ -83,8 +87,8 @@ class TestRetrieverAdapterRetrieve:
         assert result.context is not None
         assert "data" in result.context
         assert isinstance(result.context["data"], list)
-        assert len(result.context["data"]) > 0
-        assert "Paris" in result.context["data"][0]
+        assert len(result.context["data"]) == len(documents)
+        assert any("Paris" in text for text in result.context["data"])
 
     def test_retrieve_default_data_key(self):
         """Test that default data_key is 'context.data' and stored as 'data'."""
@@ -173,6 +177,9 @@ class TestRetrieverAdapterRetrieve:
         """Test that retrieved content matches the original document text."""
         documents = _create_test_documents()
         llamaindex_retriever = _create_index_with_documents(documents)
+        # MockEmbedding ties every score, so top-k selection is arbitrary;
+        # retrieve all documents to make the content assertion deterministic.
+        llamaindex_retriever.similarity_top_k = len(documents)
         adapter = RetrieverAdapter(retriever=llamaindex_retriever)
         message = AgentMessage(query="artificial intelligence")
 

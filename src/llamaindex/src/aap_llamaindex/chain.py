@@ -1,9 +1,10 @@
 from collections.abc import Callable, Sequence
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from aap_core import utils
 from aap_core.chain import BaseCausalMultiTurnsChain
-from aap_core.types import AgentMessage, TokenUsage
+from aap_core.types import AgentMessage, ContentType, TokenUsage
+from aap_core.utils import extract_repo_id, huggingface_capabilities
 from llama_index.core.base.llms.types import MessageRole, TextBlock
 from llama_index.core.llms import ChatMessage, ChatResponse
 from llama_index.core.llms.function_calling import FunctionCallingLLM
@@ -11,7 +12,10 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.tools.types import BaseTool
 from pydantic import Field, PrivateAttr
 
-from aap_llamaindex.utils import token_from_response
+from aap_llamaindex.utils import media_ref_to_image_block, token_from_response
+
+# Modalities the media gate can consult; detection reports on these.
+_GATED_MODALITIES: Tuple[ContentType, ...] = ("image", "audio", "video", "document")
 
 
 class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatResponse]):
@@ -22,18 +26,117 @@ class ChatCausalMultiTurnsChain(BaseCausalMultiTurnsChain[ChatMessage, ChatRespo
     user_prompt_template: str = Field(..., description="The user prompt template")
 
     _tool_dict: Dict[str, BaseTool] = PrivateAttr({})
+    _capabilities_cache: Dict[ContentType, bool] | None = PrivateAttr(default=None)
+    _capabilities_model: Any = PrivateAttr(default=None)
 
     def __init__(self, tools: Sequence[BaseTool | Callable] = [], **kwargs):
         super().__init__(**kwargs)
         self.tools = tools
 
+    def detect_capabilities(self) -> Dict[ContentType, bool]:
+        """Resolve per-modality input support from model metadata, not model names.
+
+        Sources, in priority order:
+        1. What the user declared in media_support ("enabled"/"disabled"). The
+           core gate applies that before this method runs, so an explicit
+           declaration always wins.
+        2. The Ollama server's capability list for the exact installed revision
+           (`ollama show` -> capabilities, e.g. ["completion", "vision"]).
+           llama-index-core itself carries no capability metadata - LLMMetadata
+           has no capabilities field - so the provider server is asked directly.
+        3. Hugging Face model-card metadata, for models identified by repo id
+           (HF-native integrations like HuggingFaceLLM or vLLM; needs
+           huggingface-hub).
+
+        Model-family names carry no weight here: variants of one family differ
+        per modality, so name matching misreports exactly the cases that
+        matter. Modalities no source reports on stay absent, and auto mode
+        treats them as capable (fail loud).
+
+        The result is cached per model instance and recomputed when the model
+        is replaced, since sources 2 and 3 cost network requests.
+        """
+        if (
+            self._capabilities_cache is None
+            or self._capabilities_model is not self.model
+        ):
+            self._capabilities_cache = self._resolve_capabilities()
+            self._capabilities_model = self.model
+        return dict(self._capabilities_cache)
+
+    def _resolve_capabilities(self) -> Dict[ContentType, bool]:
+        """Query the metadata sources once, filling gaps from the next source."""
+        capabilities = self._ollama_capabilities()
+        if set(capabilities) != set(_GATED_MODALITIES):
+            repo_id = extract_repo_id(self._identifier_candidates())
+            if repo_id is not None:
+                for modality, value in huggingface_capabilities(repo_id).items():
+                    capabilities.setdefault(modality, value)
+        return capabilities
+
+    def _ollama_capabilities(self) -> Dict[ContentType, bool]:
+        """Ask an Ollama-style server what the installed model revision can do.
+
+        Duck-typed on purpose: any integration exposing a `.client` with a
+        `.show(name)` returning a `capabilities` list gets consulted (the
+        ollama-python client does). A non-empty list is read as complete, so
+        absence of "vision" means no image input. Missing client, unknown
+        model on the server, or an offline server report undecidable rather
+        than breaking the request path.
+        """
+        name = getattr(self.model, "model", None)
+        if not isinstance(name, str):
+            return {}
+        try:
+            show = getattr(self.model.client, "show", None)
+            if show is None:
+                return {}
+            capabilities = show(name).capabilities
+        except Exception:  # noqa: BLE001 - detection must never break invoke()
+            return {}
+        if not isinstance(capabilities, list) or not capabilities:
+            return {}
+        lowered = [str(capability).lower() for capability in capabilities]
+        return {"image": "vision" in lowered}
+
+    def _identifier_candidates(self) -> List[str]:
+        """Model identifiers to test for a Hugging Face repo id, best first.
+
+        Plain attributes are read before the framework-native metadata
+        property: some integrations (e.g. Ollama) probe their server inside
+        `metadata`, so it is consulted only when no attribute already resolves
+        to a repo id.
+        """
+        candidates: List[str] = []
+        for holder in (self.model, getattr(self.model, "llm", None)):
+            if holder is None:
+                continue
+            for attr in ("repo_id", "model_id", "model_name", "model"):
+                value = getattr(holder, attr, None)
+                if isinstance(value, str):
+                    candidates.append(value)
+        if extract_repo_id(candidates) is not None:
+            return candidates
+        try:
+            name = self.model.metadata.model_name
+            if isinstance(name, str) and name != "unknown":
+                candidates.append(name)
+        except Exception:  # noqa: BLE001 - metadata may hit the network
+            pass
+        return candidates
+
     def _prepare_conversation(self, message: AgentMessage) -> List[ChatMessage]:
+        user_prompt = self.user_prompt_template.format(**message.format_kwargs())
+        images = self._image_parts(message)
+        user_content: str | List[Any] = user_prompt
+        if images:
+            user_content = [
+                TextBlock(text=user_prompt),
+                *[media_ref_to_image_block(ref) for ref in images],
+            ]
         conversation = [
             ChatMessage(role=MessageRole.SYSTEM, content=self.system_prompt),
-            ChatMessage(
-                role=MessageRole.USER,
-                content=self.user_prompt_template.format(**message.to_dict()),
-            ),
+            ChatMessage(role=MessageRole.USER, content=user_content),
         ]
         total_turns = (
             min(len(message.responses), self.include_history)
