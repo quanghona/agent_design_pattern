@@ -214,10 +214,13 @@ class BaseLLMChain(BaseChain):
     def detect_capabilities(self) -> Dict[ContentType, bool]:
         """Report which modalities the underlying model is known to accept.
 
-        Hook for subclasses in integration packages to query framework-native
-        capability metadata (e.g. llama-index Capability.VISION/AUDIO,
-        transformers processor components) or fall back to model-name heuristics.
-        Models support subsets of modalities, so the result is per-modality.
+        Hook for subclasses in integration packages to query metadata that is
+        authoritative for the exact model revision - langchain model profiles,
+        the Ollama server's capabilities list, Hugging Face model-card task
+        tags, transformers processor components. Model-family name heuristics
+        are NOT a source: variants of one family differ per modality, so names
+        misreport exactly the cases that matter. Models support subsets of
+        modalities, so the result is per-modality.
 
         Returns:
             Dict[ContentType, bool]: Known capabilities per modality. Modalities
