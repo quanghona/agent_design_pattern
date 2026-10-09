@@ -17,14 +17,15 @@ from langchain_core.messages import BaseMessage
 from pydantic import Field
 
 import aap_langchain.chain as chain_module
-import aap_langchain.utils as utils_module
-from aap_langchain.chain import ChatCausalMultiTurnsChain
-from aap_langchain.utils import (
+from aap_core.utils import (
     extract_repo_id,
     huggingface_capabilities,
+    task_tags_to_capabilities,
+)
+from aap_langchain.chain import ChatCausalMultiTurnsChain
+from aap_langchain.utils import (
     media_ref_to_content_block,
     profile_to_capabilities,
-    task_tags_to_capabilities,
 )
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -355,12 +356,14 @@ class TestCapabilityMapping:
         """Without the optional dependency, detection degrades to fail-loud."""
         import sys
 
+        import aap_core.utils as core_utils
+
         monkeypatch.setitem(sys.modules, "huggingface_hub", None)
-        monkeypatch.setattr(utils_module, "_HUB_UNAVAILABLE_LOGGED", False)
-        with caplog.at_level(logging.WARNING, logger="aap_langchain.utils"):
+        monkeypatch.setattr(core_utils, "_HUB_UNAVAILABLE_LOGGED", False)
+        with caplog.at_level(logging.WARNING, logger="aap_core.utils"):
             assert huggingface_capabilities("org/repo") == {}
             assert huggingface_capabilities("org/repo") == {}
-        assert caplog.text.count("hf") == 1
+        assert len(caplog.records) == 1
 
     def test_huggingface_reads_task_tags_from_the_card(self, monkeypatch):
         import huggingface_hub

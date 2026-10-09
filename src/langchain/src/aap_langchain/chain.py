@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Tuple
 from aap_core import utils
 from aap_core.chain import BaseCausalMultiTurnsChain
 from aap_core.types import AgentMessage, ContentType, TokenUsage
+from aap_core.utils import extract_repo_id, huggingface_capabilities
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -15,8 +16,6 @@ from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
 from aap_langchain.utils import (
-    extract_repo_id,
-    huggingface_capabilities,
     media_ref_to_content_block,
     profile_to_capabilities,
     token_from_response,
