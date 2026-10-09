@@ -46,3 +46,6 @@ build-backend = "uv_build"
 weaviate = [
     "weaviate"
 ]
+hf = [
+    "huggingface-hub>=0.30",
+]
