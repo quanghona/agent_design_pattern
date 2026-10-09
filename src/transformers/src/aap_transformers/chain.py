@@ -6,16 +6,24 @@ from typing import Any, Callable, Dict, List, Literal, Tuple
 
 from aap_core import utils
 from aap_core.chain import BaseCausalMultiTurnsChain
-from aap_core.types import AgentMessage, TokenUsage
+from aap_core.types import AgentMessage, ContentType, TokenUsage
+from aap_core.utils import extract_repo_id, huggingface_capabilities
 from pydantic import Field, PrivateAttr
 from typing_extensions import TypedDict
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    AutoTokenizer,
+)
+
+from aap_transformers.utils import media_ref_to_image_part
 
 
 class TransformersChainMessage(TypedDict):
     role: str
-    content: str
+    content: str | List[Dict[str, Any]]
 
 
 class ChatCausalMultiTurnsChain(
@@ -23,6 +31,9 @@ class ChatCausalMultiTurnsChain(
 ):
     _model: Any
     _tokenizer: Any = PrivateAttr()  # AutoTokenizer has type of Unknown!
+    _processor: Any = PrivateAttr(default=None)  # set when a processor was loadable
+    _model_id: str | None = PrivateAttr(default=None)
+    _capabilities_cache: Dict[ContentType, bool] | None = PrivateAttr(default=None)
     device: Literal["cpu", "cuda"] = Field(
         ..., description="Device the model to run on"
     )
@@ -37,16 +48,103 @@ class ChatCausalMultiTurnsChain(
         **kwargs,
     ):
         super().__init__(**kwargs)
-        if isinstance(model, str) or isinstance(model, os.PathLike):
-            self._tokenizer = AutoTokenizer.from_pretrained(model)
-            # drop device_map if running on CPU
-            self._model = AutoModelForCausalLM.from_pretrained(
-                model, device_map=self.device
+        self._bind_model(model)
+        self.tools = tools
+
+    def _bind_model(self, model: str | os.PathLike | Tuple[Any, Any]) -> None:
+        """Load a pretrained identifier or bind a caller-supplied (formatter, model) pair.
+
+        For identifiers, AutoProcessor is tried first: when it loads and carries
+        an image_processor, the vision model class and the processor are used,
+        because only the processor expands image parts into pixel inputs. Every
+        other case keeps the previous tokenizer-only path unchanged. A processor
+        that loads without an image_processor is still retained as decisive
+        negative evidence for capability detection.
+        """
+        if isinstance(model, (str, os.PathLike)):
+            identifier = os.fspath(model)
+            self._model_id = (
+                identifier if isinstance(identifier, str) else str(identifier)
             )
+            try:
+                processor = AutoProcessor.from_pretrained(self._model_id)
+            except Exception:  # noqa: BLE001 - text-only models ship no processor config
+                processor = None
+            self._processor = processor
+            if processor is not None and hasattr(processor, "image_processor"):
+                self._tokenizer = processor.tokenizer
+                self._model = AutoModelForImageTextToText.from_pretrained(
+                    self._model_id, device_map=self.device
+                )
+            else:
+                self._tokenizer = AutoTokenizer.from_pretrained(self._model_id)
+                # drop device_map if running on CPU
+                self._model = AutoModelForCausalLM.from_pretrained(
+                    self._model_id, device_map=self.device
+                )
             self._model.eval()
         else:
-            self._tokenizer, self._model = model
-        self.tools = tools
+            formatter, self._model = model
+            self._model_id = None
+            if hasattr(formatter, "image_processor") or hasattr(formatter, "tokenizer"):
+                self._processor = formatter
+                self._tokenizer = getattr(formatter, "tokenizer", formatter)
+            else:
+                self._processor = None
+                self._tokenizer = formatter
+        self._capabilities_cache = None
+
+    def detect_capabilities(self) -> Dict[ContentType, bool]:
+        """Resolve per-modality input support from the loaded artifacts, not names.
+
+        Sources, in priority order:
+        1. What the user declared in media_support ("enabled"/"disabled"). The
+           core gate applies that before this method runs, so an explicit
+           declaration always wins.
+        2. The processor actually loaded for this exact revision: presence of an
+           image_processor is decisive in both directions - these are the very
+           weights and pixel pipeline that will run.
+        3. Hugging Face model-card metadata, for models identified by repo id
+           when no processor was loadable (huggingface-hub is a hard dependency
+           of transformers, so no extra is needed).
+
+        Model-family names carry no weight here: variants of one family differ
+        per modality, so name matching misreports exactly the cases that
+        matter. Modalities no source reports on stay absent, and auto mode
+        treats them as capable (fail loud).
+
+        The result is cached and invalidated whenever the model is replaced,
+        since source 3 costs a network request.
+        """
+        if self._capabilities_cache is None:
+            self._capabilities_cache = self._resolve_capabilities()
+        return dict(self._capabilities_cache)
+
+    def _resolve_capabilities(self) -> Dict[ContentType, bool]:
+        """Query the metadata sources once, filling gaps from the next source."""
+        if self._processor is not None:
+            return {"image": hasattr(self._processor, "image_processor")}
+        repo_id = extract_repo_id(self._identifier_candidates())
+        if repo_id is not None:
+            return huggingface_capabilities(repo_id)
+        return {}
+
+    def _identifier_candidates(self) -> List[str]:
+        """Model identifiers to test for a Hugging Face repo id, best first.
+
+        Local paths are dropped here rather than left to the repo-id pattern:
+        a relative directory like "models/qwen" is shaped exactly like a repo
+        id and would otherwise cost a 404'd Hub request per lookup.
+        """
+        candidates: List[str] = []
+        for value in (
+            self._model_id,
+            getattr(self._tokenizer, "name_or_path", None),
+            getattr(getattr(self._model, "config", None), "_name_or_path", None),
+        ):
+            if isinstance(value, str) and not os.path.exists(value):
+                candidates.append(value)
+        return candidates
 
     @classmethod
     def extract_json(cls, input_str: str) -> List[str]:
@@ -63,10 +161,17 @@ class ChatCausalMultiTurnsChain(
     def _prepare_conversation(
         self, message: AgentMessage
     ) -> List[TransformersChainMessage]:
-        user_prompt = self.user_prompt_template.format(**message.to_dict())
+        user_prompt = self.user_prompt_template.format(**message.format_kwargs())
+        images = self._image_parts(message)
+        user_content: str | List[Dict[str, Any]] = user_prompt
+        if images:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                *[media_ref_to_image_part(ref) for ref in images],
+            ]
         conversation: List[TransformersChainMessage] = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ]
         total_turns = (
             min(len(message.responses), self.include_history)
@@ -90,10 +195,22 @@ class ChatCausalMultiTurnsChain(
         conversation: List[TransformersChainMessage],
         **kwargs,
     ) -> Tuple[List[TransformersChainMessage], str, bool, TokenUsage]:
-        inputs = self._tokenizer.apply_chat_template(
+        # The processor owns the pixel pipeline: image parts in the content
+        # lists are extracted and loaded by it when tokenize=True. It defaults
+        # to tokenize=False (string rendering), unlike the tokenizer, so the
+        # flag must be explicit. Without a vision processor the tokenizer path
+        # is kept byte-for-byte identical to the pre-media behavior.
+        formatter = (
+            self._processor
+            if self._processor is not None
+            and hasattr(self._processor, "image_processor")
+            else self._tokenizer
+        )
+        inputs = formatter.apply_chat_template(
             conversation,
             tools=self.tools,
             add_generation_prompt=True,
+            tokenize=True,
             return_dict=True,
             return_tensors="pt",
         )
@@ -174,16 +291,11 @@ class ChatCausalMultiTurnsChain(
 
     @property
     def model(self) -> Tuple[Any, Any]:
-        return self._tokenizer, self._model
+        # Return the processor when one was loaded so a read-modify-reassign
+        # round-trip through the setter preserves the pixel pipeline.
+        formatter = self._processor if self._processor is not None else self._tokenizer
+        return formatter, self._model
 
     @model.setter
     def model(self, model: str | os.PathLike | Tuple[Any, Any]):
-        if isinstance(model, str) or isinstance(model, os.PathLike):
-            self._tokenizer = AutoTokenizer.from_pretrained(model)
-            # drop device_map if running on CPU
-            self._model = AutoModelForCausalLM.from_pretrained(
-                model, device_map=self.device
-            )
-            self._model.eval()
-        else:
-            self._tokenizer, self._model = model
+        self._bind_model(model)
